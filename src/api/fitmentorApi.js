@@ -105,11 +105,14 @@ export const fitmentorApi = {
   deletePlan: (userId) =>
     apiRequest("Dashboard", { action: "deletePlan", userId }),
 
-  chat: (userId, message, userName) =>
-    apiRequest("Dashboard", { action: "chat", userId, payload: { message, userName } }),
+  chat: (userId, message, userName, sessions = null, activeSessionId = null) =>
+    apiRequest("Dashboard", { action: "chat", userId, payload: { message, userName, sessions, activeSessionId } }),
 
   getChatHistory: (userId) =>
     apiRequest("Dashboard", { action: "getChatHistory", userId }),
+
+  saveChatHistory: (userId, sessions) =>
+    apiRequest("Dashboard", { action: "saveChatHistory", userId, payload: { sessions } }),
 
   getAiInsights: (userId, days = 30) =>
     apiRequest("Dashboard", { action: "getAiInsights", userId, payload: { days } }),

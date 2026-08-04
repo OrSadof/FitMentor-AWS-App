@@ -96,6 +96,10 @@ export const handler = async (event) => {
       case "getChatHistory":
         result = await handleGetChatHistory(normalizedUserId);
         break;
+      case "saveChatHistory":
+        await handleSaveChatHistory(normalizedUserId, payload);
+        result = { message: "Chat history saved" };
+        break;
       case "getTrainingLogs":
         result = await handleGetTrainingLogs(normalizedUserId);
         break;
@@ -126,7 +130,20 @@ async function handleGetPlan(userId) {
 
 async function handleGetChatHistory(userId) {
   const data = await getFromDb(userId, "ChatHistory");
-  return { messages: data?.messages || [] };
+  return {
+    sessions: Array.isArray(data?.sessions) ? data.sessions : [],
+    messages: Array.isArray(data?.messages) ? data.messages : []
+  };
+}
+
+async function handleSaveChatHistory(userId, payload) {
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  await saveToDb(userId, "ChatHistory", {
+    sessions,
+    messages,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 async function handleGetTrainingLogs(userId) {

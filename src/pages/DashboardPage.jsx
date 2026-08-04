@@ -470,15 +470,17 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     }
   };
 
-  // Load chat sessions from localStorage
+  // Load chat sessions from localStorage & sync from AWS DynamoDB Cloud
   useEffect(() => {
     if (!effectiveEmail) return;
+
+    // 1. Initial instant load from localStorage
+    let initialSessions = [];
     try {
       const raw = localStorage.getItem(storageKey);
-      let parsed = raw ? JSON.parse(raw) : [];
+      initialSessions = raw ? JSON.parse(raw) : [];
 
-      // Legacy migration from fitmentor_chat_messages_...
-      if (!Array.isArray(parsed) || parsed.length === 0) {
+      if (!Array.isArray(initialSessions) || initialSessions.length === 0) {
         const legacyRaw = localStorage.getItem(`fitmentor_chat_messages_${effectiveEmail}`);
         if (legacyRaw) {
           try {
@@ -486,7 +488,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
             if (Array.isArray(legacyMsgs) && legacyMsgs.length > 0) {
               const firstUser = legacyMsgs.find(m => m.role === 'user');
               const initTitle = firstUser ? (firstUser.text.slice(0, 28) + (firstUser.text.length > 28 ? '...' : '')) : 'שיחה קודמת';
-              parsed = [{
+              initialSessions = [{
                 id: 'session_legacy',
                 title: initTitle,
                 updatedAt: Date.now(),
@@ -497,22 +499,60 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
         }
       }
 
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        const newId = 'session_' + Date.now();
-        parsed = [{
-          id: newId,
-          title: 'שיחה חדשה',
-          updatedAt: Date.now(),
-          messages: []
-        }];
-        setActiveSessionId(newId);
-      } else {
-        setActiveSessionId(parsed[0].id);
+      if (Array.isArray(initialSessions) && initialSessions.length > 0) {
+        setSessions(initialSessions);
+        setActiveSessionId(initialSessions[0].id);
       }
-      setSessions(parsed);
     } catch (err) {
-      console.error('Error loading chat sessions:', err);
+      console.error('Error reading local chat sessions:', err);
     }
+
+    // 2. Async cloud fetch from AWS DynamoDB to sync sessions across devices
+    let isMounted = true;
+    fitmentorApi.getChatHistory(effectiveEmail)
+      .then(res => {
+        if (!isMounted) return;
+        let cloudSessions = Array.isArray(res?.sessions) ? res.sessions : [];
+
+        // If cloud only has legacy flat messages array
+        if (cloudSessions.length === 0 && Array.isArray(res?.messages) && res.messages.length > 0) {
+          const firstUser = res.messages.find(m => m.role === 'user');
+          const initTitle = firstUser ? (firstUser.text.slice(0, 28) + (firstUser.text.length > 28 ? '...' : '')) : 'שיחה קודמת';
+          cloudSessions = [{
+            id: 'session_cloud',
+            title: initTitle,
+            updatedAt: Date.now(),
+            messages: res.messages
+          }];
+        }
+
+        if (cloudSessions.length > 0) {
+          setSessions(cloudSessions);
+          setActiveSessionId(prev => (cloudSessions.some(s => s.id === prev) ? prev : cloudSessions[0].id));
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(cloudSessions));
+          } catch (e) { }
+        } else if (!initialSessions || initialSessions.length === 0) {
+          const newId = 'session_' + Date.now();
+          const fresh = [{ id: newId, title: 'שיחה חדשה', updatedAt: Date.now(), messages: [] }];
+          setSessions(fresh);
+          setActiveSessionId(newId);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(fresh));
+          } catch (e) { }
+        }
+      })
+      .catch(err => {
+        console.error('Error syncing cloud chat history:', err);
+        if (!initialSessions || initialSessions.length === 0) {
+          const newId = 'session_' + Date.now();
+          const fresh = [{ id: newId, title: 'שיחה חדשה', updatedAt: Date.now(), messages: [] }];
+          setSessions(fresh);
+          setActiveSessionId(newId);
+        }
+      });
+
+    return () => { isMounted = false; };
   }, [effectiveEmail]);
 
   // Active session object & messages
@@ -557,7 +597,13 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     try {
       localStorage.setItem(storageKey, JSON.stringify(newList));
     } catch (err) {
-      console.error('Error saving chat sessions:', err);
+      console.error('Error saving local chat sessions:', err);
+    }
+    // Sync with AWS DynamoDB cloud asynchronously
+    if (effectiveEmail) {
+      fitmentorApi.saveChatHistory(effectiveEmail, newList).catch(err => {
+        console.error('Error saving chat history to cloud:', err);
+      });
     }
   };
 
@@ -606,7 +652,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     const userMsgObj = { role: 'user', text: userMsg, timestamp: now };
 
     let sessionTitle = activeSession.title;
-    if (!sessionTitle || sessionTitle === 'שיחה חדשה' || activeSession.messages.length === 0) {
+    if (!sessionTitle || sessionTitle === 'שיחה חדשה' || !activeSession.messages || activeSession.messages.length === 0) {
       sessionTitle = userMsg.slice(0, 28) + (userMsg.length > 28 ? '...' : '');
     }
 
@@ -623,7 +669,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     setChatLoading(true);
 
     try {
-      const res = await fitmentorApi.chat(effectiveEmail, userMsg, effectiveName);
+      const res = await fitmentorApi.chat(effectiveEmail, userMsg, effectiveName, updatedSessionsList, activeSession.id);
       if (res?.reply) {
         const cleanReply = sanitizeAiMessageText(res.reply);
         const aiMsgObj = { role: 'ai', text: cleanReply, timestamp: Date.now() };

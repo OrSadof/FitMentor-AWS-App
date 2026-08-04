@@ -100,6 +100,10 @@ export const handler = async (event) => {
       case "getChatHistory":
         result = await handleGetChatHistory(normalizedUserId);
         break;
+      case "saveChatHistory":
+        await handleSaveChatHistory(normalizedUserId, payload);
+        result = { message: "Chat history saved" };
+        break;
       case "getTrainingLogs":
         result = await handleGetTrainingLogs(normalizedUserId);
         break;
@@ -127,7 +131,20 @@ async function handleGetPlan(userId) {
 
 async function handleGetChatHistory(userId) {
   const data = await getFromDb(userId, "ChatHistory");
-  return { messages: data?.messages || [] };
+  return {
+    sessions: Array.isArray(data?.sessions) ? data.sessions : [],
+    messages: Array.isArray(data?.messages) ? data.messages : []
+  };
+}
+
+async function handleSaveChatHistory(userId, payload) {
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  await saveToDb(userId, "ChatHistory", {
+    sessions,
+    messages,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 async function handleGetTrainingLogs(userId) {
@@ -361,14 +378,42 @@ async function handleChat(userId, { message, userName }) {
     };
   }
 
-  if (parsedResponse && typeof parsedResponse.reply === "string") {
-    parsedResponse.reply = sanitizeUserFacingText(parsedResponse.reply);
+  const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
+  const aiMsgObj = { role: "ai", text: parsedResponse.reply, timestamp: Date.now() };
+
+  let updatedSessions = Array.isArray(payload?.sessions) ? [...payload.sessions] : null;
+  if (updatedSessions && updatedSessions.length > 0) {
+    const activeId = payload.activeSessionId || updatedSessions[0].id;
+    const activeIdx = updatedSessions.findIndex(s => s.id === activeId);
+    const targetIdx = activeIdx >= 0 ? activeIdx : 0;
+    const targetSession = updatedSessions[targetIdx];
+
+    let sessionTitle = targetSession.title;
+    if (!sessionTitle || sessionTitle === 'שיחה חדשה' || !targetSession.messages || targetSession.messages.length === 0) {
+      sessionTitle = message.slice(0, 28) + (message.length > 28 ? '...' : '');
+    }
+
+    const updatedMessages = [...(targetSession.messages || []), userMsgObj, aiMsgObj];
+    updatedSessions[targetIdx] = {
+      ...targetSession,
+      title: sessionTitle,
+      updatedAt: Date.now(),
+      messages: updatedMessages
+    };
+
+    await saveToDb(userId, "ChatHistory", {
+      sessions: updatedSessions,
+      messages: updatedMessages,
+      updatedAt: new Date().toISOString()
+    });
+  } else {
+    messages.push(userMsgObj);
+    messages.push(aiMsgObj);
+    await saveToDb(userId, "ChatHistory", {
+      messages,
+      updatedAt: new Date().toISOString()
+    });
   }
-
-  messages.push({ role: "user", text: message, timestamp: Date.now() });
-  messages.push({ role: "ai", text: parsedResponse.reply, timestamp: Date.now() });
-
-  await saveToDb(userId, "ChatHistory", { messages });
 
   if (parsedResponse.updatedPlanHtml) {
     await saveToDb(userId, "Plan", {
