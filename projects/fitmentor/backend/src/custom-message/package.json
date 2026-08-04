@@ -1,0 +1,7 @@
+{
+  "name": "fitmentor-cognitocustommessage",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {}
+}

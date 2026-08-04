@@ -1,0 +1,7 @@
+{
+  "action": "adminGetDashboardData",
+  "userId": "orsadof@gmail.com",
+  "headers": {
+    "Authorization": "Bearer test"
+  }
+}
