@@ -31,7 +31,7 @@ async function incrementMetric(field, by = 1) {
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
 const MAX_PLAN_HISTORY_TO_FETCH = 5;
 
-function isLikelyRealPlanHtml(planHtml) {
+function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   const s = String(planHtml || "").trim();
   if (!s) return false;
   if (s.startsWith("{") && (s.includes('"reply"') || s.includes('"updatedPlanHtml"') || s.includes('"uiAction"'))) {
@@ -42,6 +42,10 @@ function isLikelyRealPlanHtml(planHtml) {
 
   const lower = s.toLowerCase();
   if (lower.includes("failed") || lower.includes("error") || lower.includes("לא הצלחתי")) {
+    return false;
+  }
+  const dayHeadings = (s.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []);
+  if (dayHeadings.length < expectedDays) {
     return false;
   }
   return true;
@@ -177,6 +181,7 @@ async function handleGetTrainingLogs(userId) {
 
 async function handleGeneratePlan(userId, payload) {
   const { age, goal, days, equipment, weight, height, gender, fitnessLevel } = payload;
+  const reqDays = Math.max(1, parseInt(days, 10) || 3);
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
@@ -188,7 +193,7 @@ User info:
 - Height: ${height} cm
 - Fitness level: ${fitnessLevel}
 - Goal: ${goal}
-- Workout days/week: ${days}
+- Workout days/week REQUIRED (MUST build exactly ${reqDays} days!): ${reqDays} days
 - Available equipment: ${equipment}
 
 Previous plans summary:
@@ -196,9 +201,10 @@ ${historyContext}
 
 Instructions:
 1. Return valid, clean HTML wrapped in <div class="ai-plan-result">.
-2. Include <h3> headers for workout days, <h4> for exercises, and lists for sets/reps.
-3. Include a <div class="plan-tips"> section with nutrition and recovery advice.
-4. Do not include markdown formatting, markdown backticks, or intro/outro text.
+2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: ...</h3>, <h3>Day 2: ...</h3>, <h3>Day 3: ...</h3>).
+3. Under each day, include 4 to 6 detailed exercises with sets, reps, rest times, technique tips, progressive overload notes, and per-set recommended weights.
+4. Include a <div class="plan-tips"> section with nutrition and recovery advice.
+5. Do not include markdown formatting, markdown backticks, or intro/outro text.
 
 WEIGHTS (critical):
 - For EVERY weightlifting exercise, prescribe the EXACT weight in kg (ק"ג) to use for EACH set, as a separate line in the exercise HTML exactly like this:
@@ -208,9 +214,14 @@ WEIGHTS (critical):
 - Use realistic barbell/dumbbell increments (2.5 kg or 5 kg steps). Weights must be sensible for the user's level (beginner → lighter, advanced → heavier) and should get progressively heavier across the working sets as they progress week to week.
 - For BODYWEIGHT-only exercises (plank, crunches, push-ups, pull-ups, hanging knee raises, core), skip the "משקל מומלץ" line (or write "משקל גוף").`;
 
-  const planHtml = await tryGenerateContent(prompt);
-  if (!isLikelyRealPlanHtml(planHtml)) {
-    throw new Error("AI failed to generate a valid plan");
+  let planHtml = await tryGenerateContent(prompt);
+  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    console.warn(`Initial plan output failed validation (expected ${reqDays} days). Retrying...`);
+    planHtml = await tryGenerateContent(prompt + "\nCRITICAL: Do NOT stop mid-way. Complete all " + reqDays + " workout days fully.");
+  }
+
+  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    throw new Error(`AI failed to generate a complete plan for ${reqDays} days. Please try again.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");
@@ -339,8 +350,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 20000; // 20-second timeout to prevent stuck calls
-const MAX_OUTPUT_TOKENS = 2500; // Strict token limit to prevent wallet drain
+const API_TIMEOUT_MS = 40000; // 40-second timeout to allow full plan generation
+const MAX_OUTPUT_TOKENS = 4000; // Expanded token limit so multi-day plans with per-set weights are never truncated
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));

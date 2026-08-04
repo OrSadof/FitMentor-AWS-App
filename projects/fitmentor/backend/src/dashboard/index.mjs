@@ -30,7 +30,7 @@ async function incrementMetric(field, by = 1) {
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
 const MAX_PLAN_HISTORY_TO_FETCH = 5;
 
-function isLikelyRealPlanHtml(planHtml) {
+function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   const s = String(planHtml || "").trim();
   if (!s) return false;
   if (s.startsWith("{") && (s.includes('"reply"') || s.includes('"updatedPlanHtml"') || s.includes('"uiAction"'))) {
@@ -42,7 +42,8 @@ function isLikelyRealPlanHtml(planHtml) {
   if (lower.includes("לא הצלחתי לייצר תוכנית") || lower.includes("לא הצלחתי לטעון תוכנית") || lower.includes("בעיה בתקשורת") || lower.includes("נסה שוב")) {
     return false;
   }
-  if (!/(<h3[^>]*>[^<]*(יום|אימון)[^<]*<\/h3>)/i.test(s)) {
+  const dayHeadings = (s.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []);
+  if (dayHeadings.length < expectedDays) {
     return false;
   }
 
@@ -181,11 +182,12 @@ async function handleGetTrainingLogs(userId) {
 
 async function handleGeneratePlan(userId, payload) {
   const { age, goal, days, equipment, weight, height, gender, fitnessLevel } = payload;
+  const reqDays = Math.max(1, parseInt(days, 10) || 3);
 
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי. המשימה שלך: לבנות תוכנית אימון שבועית מותאמת אישית.
+  const prompt = `אתה מאמן כושר מקצועי ברמה הגבוהה ביותר. המשימה שלך: לבנות תוכנית אימון שבועית מפורטת ומלאה.
   פרטי המתאמן:
   - גיל: ${age}
   - מגדר: ${gender === 'male' ? 'זכר' : 'נקבה'}
@@ -193,16 +195,16 @@ async function handleGeneratePlan(userId, payload) {
   - גובה: ${height} ס"מ
   - רמת כושר: ${fitnessLevel}
   - מטרה: ${goal}
-  - ימי אימון בשבוע: ${days}
+  - מספר ימי אימון בשבוע שנדרש לבנות (חובה בדיוק ${reqDays} ימים!): ${reqDays} ימים
   - ציוד זמין: ${equipment}
 
   היסטוריית תוכניות קודמות (סיכום):
   ${historyContext}
 
-  הנחיות לבניית התוכנית:
-  1. התחשב בנתוני המתאמן (משקל: ${weight} ק"ג, גובה: ${height} ס"מ, גיל: ${age}, מגדר: ${gender}, רמה: ${fitnessLevel}) בבחירת התרגילים, העומסים, הסטים והחזרות.
-  2. עבור מתחילים, דגש על טכניקה ובניית בסיס. למתקדמים, שילוב טכניקות עצימות.
-  3. חובה: לכל תרגיל (למעט תרגילי משקל גוף חופשיים כמו פלאנק או שכיבות סמיכה) רשום שורת "משקל מומלץ:" מחושבת ומדויקת בקילוגרמים (ק"ג) לכל סט באופן אישי לפי משקל הגוף ורמת הכושר.
+  הנחיות קריטיות לבניית התוכנית:
+  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים ומלאים! לכל יום צור כותרת h3 (למשל: <h3>יום 1: אימון דחיפה...</h3>, <h3>יום 2: אימון משיכה...</h3>, <h3>יום 3: אימון רגליים...</h3>).
+  2. לכל יום אימון צרף 4 עד 6 תרגילים מפורטים.
+  3. חובה: לכל תרגיל (למעט תרגילי משקל גוף חופשיים כמו פלאנק או שכיבות סמיכה) רשום שורת "משקל מומלץ:" מחושבת ומדויקת בקילוגרמים (ק"ג) לכל סט באופן אישי לפי משקל הגוף (${weight} ק"ג) ורמת הכושר.
      פורמט תרגיל חובה:
      <p>🏋️ <strong>שם התרגיל</strong></p>
      <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
@@ -210,15 +212,17 @@ async function handleGeneratePlan(userId, payload) {
      <p><strong>דגש טכניקה:</strong> ...</p>
      <p><strong>התקדמות עומס:</strong> ...</p>
   4. החזר אך ורק קוד HTML תקין שניתן להזריק לאתר (בתוך div class="ai-plan-result").
-  5. השתמש ב-h3 לכותרות ימים, h4 לתרגילים או קבוצות שריר, ו-ul/li לרשימות.
-  6. בסוף הוסף div class="plan-tips" עם טיפים לתזונה והתאוששות המתאימים למטרה ולנתונים האישיים.
-  7. אל תכתוב הקדמות או סיומות, רק את ה-HTML הנקי.
-  8. חשוב: אל תמחזר בדיוק את אותה תוכנית שהייתה בעבר. תציע וריאציה מורגשת (חלוקה/תרגילים/טווחי חזרות), תוך שמירה על המטרה.
-  9. אם אין היסטוריה, התעלם מהסעיף הזה.`;
+  5. בסוף הוסף div class="plan-tips" עם טיפים לתזונה והתאוששות המתאימים למטרה ולנתונים האישיים.
+  6. אל תכתוב הקדמות או סיומות מחוץ ל-HTML.`;
 
-  const planHtml = await tryGenerateContent(prompt);
-  if (!isLikelyRealPlanHtml(planHtml)) {
-    throw new Error("AI failed to generate a valid plan");
+  let planHtml = await tryGenerateContent(prompt);
+  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    console.warn(`Initial plan output failed validation (expected ${reqDays} days). Retrying...`);
+    planHtml = await tryGenerateContent(prompt + "\nחשוב מאוד: אל תעצור באמצע, השלם את כל " + reqDays + " ימי האימון במלואם!");
+  }
+
+  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    throw new Error(`ה-AI לא הצליח לייצר תוכנית מלאה עבור ${reqDays} ימים. אנא נסה שוב.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");
@@ -530,8 +534,8 @@ function sanitizeUserFacingText(text) {
 
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 20000; // 20-second timeout to prevent stuck calls
-const MAX_OUTPUT_TOKENS = 2500; // Strict token limit to prevent wallet drain
+const API_TIMEOUT_MS = 40000; // 40-second timeout to allow full plan generation
+const MAX_OUTPUT_TOKENS = 4000; // Expanded token limit so multi-day plans with per-set weights are never truncated
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
