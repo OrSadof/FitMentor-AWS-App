@@ -1377,14 +1377,9 @@ export function DashboardPage({ user }) {
     dayTemplates.forEach((dayObj) => {
       html += `\n<h3>${dayObj.title}</h3>\n`;
       dayObj.exercises.forEach((ex) => {
-        const numSets = parseInt(String(ex.sets).replace(/[^\d]/g, ''), 10) || 3;
-        const setW = computePerSetWeights(ex.name, weight, fitnessLevel, numSets);
-        const weightLine = setW
-          ? `<p><strong>משקל מומלץ:</strong> ${setW.map((w, i) => `סט ${i + 1}: ${w} ק"ג`).join(' | ')}</p>\n`
-          : '';
         html += `<p>🏋️ <strong>${ex.name}</strong></p>
 <p><strong>סטים:</strong> ${ex.sets} | <strong>חזרות:</strong> ${ex.reps} | <strong>מנוחה:</strong> ${ex.rest}</p>
-${weightLine}<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
+<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
 <p><strong>התקדמות עומס:</strong> ${ex.prog}</p>\n\n`;
       });
     });
