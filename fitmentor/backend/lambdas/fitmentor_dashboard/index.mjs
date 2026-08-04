@@ -198,7 +198,15 @@ Instructions:
 1. Return valid, clean HTML wrapped in <div class="ai-plan-result">.
 2. Include <h3> headers for workout days, <h4> for exercises, and lists for sets/reps.
 3. Include a <div class="plan-tips"> section with nutrition and recovery advice.
-4. Do not include markdown formatting, markdown backticks, or intro/outro text.`;
+4. Do not include markdown formatting, markdown backticks, or intro/outro text.
+
+WEIGHTS (critical):
+- For EVERY weightlifting exercise, prescribe the EXACT weight in kg (ק"ג) to use for EACH set, as a separate line in the exercise HTML exactly like this:
+  <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 45 ק"ג | סט 3: 50 ק"ג</p>
+- DECIDE the weights yourself, based on the user's full profile (age, gender, body weight, height, fitness level, goal, experience) and the exercise type (compound vs. isolation, upper vs. lower body).
+- The weight MUST DIFFER per set, with a natural progression: set 1 is a lighter warm-up/feeler set, and later sets are heavier (the working sets). Do NOT repeat the same weight for every set.
+- Use realistic barbell/dumbbell increments (2.5 kg or 5 kg steps). Weights must be sensible for the user's level (beginner → lighter, advanced → heavier) and should get progressively heavier across the working sets as they progress week to week.
+- For BODYWEIGHT-only exercises (plank, crunches, push-ups, pull-ups, hanging knee raises, core), skip the "משקל מומלץ" line (or write "משקל גוף").`;
 
   const planHtml = await tryGenerateContent(prompt);
   if (!isLikelyRealPlanHtml(planHtml)) {
@@ -269,7 +277,9 @@ Progress Summary:
 ${progress.summary}
 
 Training Logs:
-${trainingLogsContext}`;
+${trainingLogsContext}
+
+When you modify or regenerate the plan (updatedPlanHtml), every weightlifting exercise must include a "משקל מומלץ" line prescribing the exact kg to use for EACH set, e.g. <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 45 ק"ג | סט 3: 50 ק"ג</p>. Decide the weights yourself from the user's profile (age, gender, weight, height, fitness level, goal) and exercise type; the weight must differ per set (lighter first set, heavier working sets) using 2.5/5 kg plate increments. For bodyweight-only exercises, omit the line.`;
 
   const recentHistory = messages.slice(-6).map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.text}`).join("\n");
   const fullPrompt = `${systemPrompt}\n\nChat History:\n${recentHistory}\n\nUser: ${message}\nAI (JSON):`;

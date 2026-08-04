@@ -93,6 +93,21 @@ function parsePlanIntoDays(html) {
   return { intro, days };
 }
 
+/* Parse a "משקל מומלץ: סט 1: 30 ק"ג | סט 2: 35 ק"ג | סט 3: 40 ק"ג" line into [30, 35, 40] */
+function parseSetWeightsFromLine(line) {
+  const setPattern = /סט\s*\d+\s*[:\-–—]?\s*(\d+(?:[.,]\d+)?)\s*(?:ק"ג|kg|קילו)?/gi;
+  const matches = [];
+  let m;
+  while ((m = setPattern.exec(line)) !== null) {
+    matches.push(Number(m[1].replace(',', '.')));
+  }
+  if (matches.length > 0) return matches;
+  // Fallback: bare kg values separated by separators
+  const sep = line.match(/(\d+(?:[.,]\d+)?)\s*(?:ק"ג|kg)/gi);
+  if (sep) return sep.map(s => Number(s.replace(/[^\d.,]/g, '').replace(',', '.')));
+  return null;
+}
+
 /* ─── Exercise Parser & Structured Formatter ─── */
 function parseExercisesFromContent(rawContent) {
   if (!rawContent) return [];
@@ -126,7 +141,8 @@ function parseExercisesFromContent(rawContent) {
         statsBadges: [],
         technique: '',
         progression: '',
-        extraDetails: []
+        extraDetails: [],
+        setWeights: []
       };
       return;
     }
@@ -137,8 +153,20 @@ function parseExercisesFromContent(rawContent) {
         statsBadges: [],
         technique: '',
         progression: '',
-        extraDetails: []
+        extraDetails: [],
+        setWeights: []
       };
+      return;
+    }
+
+    // Parse Recommended Weight per set (KG) – provided by the AI in the plan
+    if (line.includes('משקל') || /^weight\s*[:\-]/i.test(line)) {
+      const setWeights = parseSetWeightsFromLine(line);
+      if (setWeights && setWeights.length > 0) {
+        currentEx.setWeights = setWeights;
+      } else {
+        currentEx.extraDetails.push(line);
+      }
       return;
     }
 
@@ -189,8 +217,68 @@ function parseExercisesFromContent(rawContent) {
   return exercises;
 }
 
-function PlanExerciseItem({ ex }) {
+/* ─── Helper: recommend a starting weight (KG) per exercise ───
+   Auto-computed from the user's body weight and fitness level.
+   Returns null for bodyweight-only movements or when no weight is known. */
+function getExerciseWeightPct(title) {
+  const t = (title || '').toLowerCase();
+
+  // Bodyweight-only movements – no external load needed
+  if (/(פלאנק|plank|כפיפות בטן|crunch|שכיבות|push-?up|תלייה|הרמת (ברכיים|רגליים)|ליבה|core|סופרמן|jumping)/.test(t)) return null;
+
+  // Lower-body compound lifts – heaviest relative to body weight
+  if (/(סקוואט|squat|דדליפט|deadlift|leg ?press|לחיצת רגליים|thrust|glute|חטיפה)/.test(t)) return 0.9;
+
+  // Chest press
+  if (/(לחיצת חזה|bench|chest)/.test(t)) return 0.6;
+
+  // Back: rows / pulldowns / pull-ups
+  if (/(חתירה|row|משיכת פולי|pulldown|lat|מתח|pull-?up|chin)/.test(t)) return 0.55;
+
+  // Shoulders: overhead press
+  if (/(לחיצת כתפיים|shoulder|overhead|military)/.test(t)) return 0.4;
+
+  // Legs isolation / lunges / calves
+  if (/(מכרעים|lunge|כפילת ברכיים|leg ?curl|פשיטת ברכיים|leg ?extension|עקבים|calf|הרמת אגן|glute bridge)/.test(t)) return 0.35;
+
+  // Arms isolation (biceps / triceps)
+  if (/(כפילת|bicep|יד קדמית|פשיטת|tricep|יד אחורית|hammer|פטיש)/.test(t)) return 0.2;
+
+  // Lateral raises
+  if (/(הרחקת|lateral|side.?raise)/.test(t)) return 0.1;
+
+  // Default for unclassified movements
+  return 0.4;
+}
+
+function roundToPlate(kg) {
+  return Math.max(1, Math.round(kg / 2.5) * 2.5);
+}
+
+// Compute a per-set weight ramp for a given number of sets: set 1 starts at the
+// base weight and each following set adds a plate (2.5 kg) – a gradual build-up.
+function computePerSetWeights(name, bodyWeightKg, fitnessLevel, numSets) {
+  const pct = getExerciseWeightPct(name);
+  if (pct === null || !bodyWeightKg || bodyWeightKg <= 0) return null;
+
+  const levelFactor = { beginner: 0.8, intermediate: 1.0, advanced: 1.25 }[fitnessLevel] || 1.0;
+  const base = roundToPlate(bodyWeightKg * pct * levelFactor);
+
+  const count = Math.max(1, numSets || 1);
+  return Array.from({ length: count }, (_, i) => Math.max(2.5, roundToPlate(base + i * 2.5)));
+}
+
+function getSuggestedSetWeights(exercise, bodyWeightKg, fitnessLevel) {
+  const setsBadge = (exercise.statsBadges || []).find(b => b.label === 'סטים');
+  const numSets = parseInt(String(setsBadge?.val || '3').replace(/[^\d]/g, ''), 10) || 3;
+  return computePerSetWeights(exercise.title, bodyWeightKg, fitnessLevel, numSets);
+}
+
+function PlanExerciseItem({ ex, bodyWeightKg, fitnessLevel }) {
   const [isOpen, setIsOpen] = useState(false);
+  // Prefer the exact per-set weights the AI provided in the plan; otherwise fall
+  // back to an auto-computed ramp.
+  const setWeights = (ex.setWeights && ex.setWeights.length) ? ex.setWeights : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
 
   return (
     <div className="plan-exercise-card" data-open={isOpen}>
@@ -219,6 +307,18 @@ function PlanExerciseItem({ ex }) {
                   <span className="badge-value">{badge.val}</span>
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Recommended weight per set */}
+          {setWeights && (
+            <div className="plan-ex-weights">
+              <span className="plan-ex-weights-label">🏋️ משקל מומלץ:</span>
+              <div className="plan-ex-weights-sets">
+                {setWeights.map((w, i) => (
+                  <span key={i} className="plan-ex-weight-set">סט {i + 1} — {w} ק"ג</span>
+                ))}
+              </div>
             </div>
           )}
 
@@ -258,7 +358,7 @@ function PlanExerciseItem({ ex }) {
   );
 }
 
-function RenderFormattedDayContent({ rawContent }) {
+function RenderFormattedDayContent({ rawContent, bodyWeightKg, fitnessLevel }) {
   if (!rawContent) return null;
 
   const exercises = parseExercisesFromContent(rawContent);
@@ -270,14 +370,14 @@ function RenderFormattedDayContent({ rawContent }) {
   return (
     <div className="plan-exercises-list">
       {exercises.map((ex, i) => (
-        <PlanExerciseItem key={i} ex={ex} />
+        <PlanExerciseItem key={i} ex={ex} bodyWeightKg={bodyWeightKg} fitnessLevel={fitnessLevel} />
       ))}
     </div>
   );
 }
 
 /* ─── Plan Day Accordion Card ─── */
-function PlanDayCard({ day, index, isOpen, onToggle }) {
+function PlanDayCard({ day, index, isOpen, onToggle, bodyWeightKg, fitnessLevel }) {
   const dayIcons = ['🏋️', '💪', '🔥', '⚡', '🎯', '🚀', '🌟'];
   const icon = dayIcons[index % dayIcons.length];
 
@@ -294,8 +394,131 @@ function PlanDayCard({ day, index, isOpen, onToggle }) {
       </button>
       {isOpen && (
         <div className="plan-day-body">
-          <RenderFormattedDayContent rawContent={day.content} />
+          <RenderFormattedDayContent rawContent={day.content} bodyWeightKg={bodyWeightKg} fitnessLevel={fitnessLevel} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Print-Only, Fully Expanded Plan Document ───
+   A self-contained, white, print-ready layout that lists EVERY day and
+   renders every exercise in full (sets / reps / rest, technique focus,
+   progressive-overload notes and extra details) — independent of which
+   accordions are open on screen. Hidden normally, shown only under @media print. */
+function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel }) {
+  const today = new Date().toLocaleDateString('he-IL', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const findBadge = (ex, label) => ex.statsBadges.find(b => b.label === label);
+
+  return (
+    <div className="printable-plan" dir="rtl">
+      {/* Document header */}
+      <header className="pp-header">
+        <div className="pp-brand">
+          <div className="pp-brand-text">
+            <div className="pp-brand-name">תוכנית אימונים אישית</div>
+          </div>
+        </div>
+        <div className="pp-meta">
+          <div className="pp-user">{name}</div>
+          <div className="pp-date">{today}</div>
+        </div>
+      </header>
+
+      {/* Plan intro / summary (if any content precedes the first day) */}
+      {intro && (
+        <section className="pp-intro">
+          <div className="pp-section-title">תקציר התוכנית</div>
+          <div className="pp-intro-body" dangerouslySetInnerHTML={{ __html: intro }} />
+        </section>
+      )}
+
+      {/* Overview strip: quick list of all days */}
+      {days.length > 0 && (
+        <section className="pp-summary">
+          <div className="pp-section-title">ימי האימון ({days.length})</div>
+          <div className="pp-summary-grid">
+            {days.map((d, i) => (
+              <div className="pp-summary-chip" key={i}>
+                <span className="pp-summary-num">{i + 1}</span>
+                <span className="pp-summary-name">{d.title}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Every day, fully expanded */}
+      {days.length > 0 ? (
+        days.map((day, idx) => {
+          const exercises = parseExercisesFromContent(day.content);
+          return (
+            <section className="pp-day" key={idx}>
+              <div className="pp-day-header">
+                <span className="pp-day-badge">יום {idx + 1}</span>
+                <h2 className="pp-day-title">{day.title}</h2>
+              </div>
+
+              {exercises.length === 0 ? (
+                <div className="pp-day-raw" dangerouslySetInnerHTML={{ __html: day.content }} />
+              ) : (
+                <>
+                  <table className="pp-table">
+                    <thead>
+                      <tr>
+                        <th className="pp-col-num">#</th>
+                        <th className="pp-col-ex">תרגיל</th>
+                        <th className="pp-col-stat">סטים</th>
+                        <th className="pp-col-stat">חזרות</th>
+                        <th className="pp-col-stat">מנוחה</th>
+                        <th className="pp-col-stat">משקל (ק"ג)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exercises.map((ex, j) => {
+                        const sets = findBadge(ex, 'סטים');
+                        const reps = findBadge(ex, 'חזרות');
+                        const rest = findBadge(ex, 'מנוחה');
+                        const weights = (ex.setWeights && ex.setWeights.length)
+                          ? ex.setWeights
+                          : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
+                        const weightStr = weights
+                          ? (new Set(weights).size === 1 ? `${weights[0]}` : weights.join(' / '))
+                          : '—';
+                        return (
+                          <tr key={j}>
+                            <td className="pp-col-num">{j + 1}</td>
+                            <td className="pp-col-ex">
+                              <div className="pp-ex-name">{ex.title}</div>
+                              {ex.technique && <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique}</div>}
+                              {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">התקדמות עומס</span>{ex.progression}</div>}
+                              {ex.extraDetails.map((det, k) => (
+                                <div className="pp-ex-detail" key={k}>{det}</div>
+                              ))}
+                            </td>
+                            <td className="pp-col-stat">{sets ? sets.val : '—'}</td>
+                            <td className="pp-col-stat">{reps ? reps.val : '—'}</td>
+                            <td className="pp-col-stat">{rest ? rest.val : '—'}</td>
+                            <td className="pp-col-stat">{weightStr}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </section>
+          );
+        })
+      ) : (
+        /* Fallback: raw plan HTML when day-parsing failed */
+        <section className="pp-day">
+          <div className="pp-day-header">
+            <h2 className="pp-day-title">תוכנית האימונים</h2>
+          </div>
+          <div className="pp-day-raw" dangerouslySetInnerHTML={{ __html: rawHtml }} />
+        </section>
       )}
     </div>
   );
@@ -1009,6 +1232,7 @@ export function DashboardPage({ user }) {
   const effectiveName = user?.name || user?.displayName || localStorage.getItem('fitmentor_displayName') || 'מתאמן';
 
   const [planHtml, setPlanHtml] = useState(null);
+  const [planParams, setPlanParams] = useState(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
   const [isBuildingPlan, setIsBuildingPlan] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -1037,10 +1261,20 @@ export function DashboardPage({ user }) {
       } else {
         setPlanHtml(null);
       }
+      // Capture plan params (incl. body weight) if the backend returns them
+      if (res?.plan?.params) {
+        setPlanParams(res.plan.params);
+        try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(res.plan.params)); } catch (e) { }
+      }
     } catch (err) {
       console.error('Error loading plan:', err);
       setPlanHtml(null);
     } finally {
+      // Fallback: reuse last known plan params from localStorage
+      try {
+        const raw = localStorage.getItem(`fitmentor_plan_params_${effectiveEmail}`);
+        if (raw) setPlanParams(JSON.parse(raw));
+      } catch (e) { }
       setLoadingPlan(false);
     }
   };
@@ -1203,9 +1437,14 @@ export function DashboardPage({ user }) {
     dayTemplates.forEach((dayObj) => {
       html += `\n<h3>${dayObj.title}</h3>\n`;
       dayObj.exercises.forEach((ex) => {
+        const numSets = parseInt(String(ex.sets).replace(/[^\d]/g, ''), 10) || 3;
+        const setW = computePerSetWeights(ex.name, weight, fitnessLevel, numSets);
+        const weightLine = setW
+          ? `<p><strong>משקל מומלץ:</strong> ${setW.map((w, i) => `סט ${i + 1}: ${w} ק"ג`).join(' | ')}</p>\n`
+          : '';
         html += `<p>🏋️ <strong>${ex.name}</strong></p>
 <p><strong>סטים:</strong> ${ex.sets} | <strong>חזרות:</strong> ${ex.reps} | <strong>מנוחה:</strong> ${ex.rest}</p>
-<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
+${weightLine}<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
 <p><strong>התקדמות עומס:</strong> ${ex.prog}</p>\n\n`;
       });
     });
@@ -1241,6 +1480,8 @@ export function DashboardPage({ user }) {
       }
 
       setPlanHtml(finalPlanHtml);
+      setPlanParams(params);
+      try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(params)); } catch (e) { }
       setIsBuildingPlan(false);
       setShowNewPlanModal(false);
       setOpenDayIndices({});
@@ -1267,6 +1508,11 @@ export function DashboardPage({ user }) {
   const parsedPlan = parsePlanIntoDays(cleanedPlan);
   const planDays = parsedPlan.days || [];
   const planIntro = parsedPlan.intro || null;
+
+  // Body weight & fitness level for the suggested weight-per-set
+  const introWeightMatch = cleanedPlan.match(/משקל\s*(\d+(?:\.\d+)?)\s*ק"ג/);
+  const bodyWeightKg = Number(planParams?.weight) || (introWeightMatch ? Number(introWeightMatch[1]) : 0) || 0;
+  const fitnessLevel = planParams?.fitnessLevel || 'beginner';
 
   const isAllOpen = planDays.length > 0 && planDays.every((_, idx) => openDayIndices[idx] !== false);
 
@@ -1347,6 +1593,7 @@ export function DashboardPage({ user }) {
 
           {/* 4. Active Plan Display */}
           {!loadingPlan && planHtml && (
+            <>
             <div id="printPlanWrapper">
               {/* Single Unified Header Card */}
               <div className="plan-unified-header-card">
@@ -1397,6 +1644,8 @@ export function DashboardPage({ user }) {
                       index={idx}
                       isOpen={Boolean(openDayIndices[idx])}
                       onToggle={() => setOpenDayIndices(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                      bodyWeightKg={bodyWeightKg}
+                      fitnessLevel={fitnessLevel}
                     />
                   ))}
                 </div>
@@ -1413,6 +1662,16 @@ export function DashboardPage({ user }) {
                 <span>טיפ: לחץ על כפתור ה-AI למטה מימין כדי לשנות את התוכנית, לשאול שאלות על תזונה או לקבל ייעוץ אישי!</span>
               </div>
             </div>
+
+            <PrintablePlan
+              name={effectiveName}
+              intro={planIntro}
+              days={planDays}
+              rawHtml={cleanedPlan}
+              bodyWeightKg={bodyWeightKg}
+              fitnessLevel={fitnessLevel}
+            />
+            </>
           )}
         </div>
       </main>

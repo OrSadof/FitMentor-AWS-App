@@ -2571,6 +2571,44 @@ ul {
   font-weight: 800;
 }
 
+/* Recommended weight per set */
+.plan-ex-weights {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.plan-ex-weights-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #fbbf24;
+  font-family: 'Rubik', sans-serif;
+}
+
+.plan-ex-weights-sets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plan-ex-weight-set {
+  padding: 4px 10px;
+  border-radius: 7px;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: 'Rubik', sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
 .plan-ex-box {
   background: rgba(15, 23, 42, 0.6);
   border-radius: 12px;
@@ -6717,6 +6755,11 @@ ul {
 /* ==========================================
    DEDICATED PDF & PRINT STYLESHEET
    ========================================== */
+/* Hidden on screen — only shown in print */
+.printable-plan {
+  display: none !important;
+}
+
 @media print {
   @page {
     size: A4 portrait;
@@ -6735,11 +6778,13 @@ ul {
     print-color-adjust: exact !important;
   }
 
-  /* Hide Web Nav, Sidebars, AI Chat, Modals & Floating Buttons */
+  /* Hide Web Nav, Sidebars, AI Chat, Modals, Floating Buttons, Footer & the on-screen plan UI */
   .main-header,
+  .main-footer,
   .modern-sidebar,
   .sidebar-overlay,
   .floating-chat-trigger,
+  .chat-fab,
   .chat-panel-container,
   .dash-action-bar-buttons,
   .btn-plan-generate,
@@ -6749,7 +6794,12 @@ ul {
   .fm-modal,
   .plan-ex-chevron,
   .sidebar-nav-container,
-  .chat-scroll-bottom-btn {
+  .chat-scroll-bottom-btn,
+  .dashboard-header-welcome,
+  .dash-loader,
+  .dash-empty-state,
+  .dash-builder,
+  #printPlanWrapper {
     display: none !important;
   }
 
@@ -6769,6 +6819,12 @@ ul {
 
   #printPlanWrapper {
     width: 100% !important;
+  }
+
+  /* Hide the fixed dark hero overlay so the print document sits on pure white */
+  .hero::before,
+  .hero::after {
+    display: none !important;
   }
 
   /* Plan Header Card */
@@ -6952,6 +7008,307 @@ ul {
     margin-top: 16px !important;
     page-break-after: avoid;
     break-after: avoid;
+  }
+
+  /* ═══════════ Print-Only Plan Document ═══════════ */
+  .printable-plan {
+    display: block !important;
+    width: 100% !important;
+    color: #111827 !important;
+    direction: rtl;
+    text-align: right;
+    font-family: 'Rubik', system-ui, -apple-system, sans-serif !important;
+  }
+
+  /* Header */
+  .pp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px;
+    background: linear-gradient(135deg, #0f172a, #1e3a5f) !important;
+    border-radius: 12px;
+    color: #ffffff !important;
+    margin-bottom: 18px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .pp-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pp-brand-logo {
+    font-size: 22pt;
+    line-height: 1;
+  }
+
+  .pp-brand-name {
+    font-size: 16pt;
+    font-weight: 800;
+    color: #ffffff !important;
+    line-height: 1.1;
+  }
+
+  .pp-brand-sub {
+    font-size: 9pt;
+    color: #cbd5e1 !important;
+    margin-top: 2px;
+  }
+
+  .pp-meta {
+    text-align: left;
+  }
+
+  .pp-user {
+    font-size: 13pt;
+    font-weight: 700;
+    color: #ffffff !important;
+  }
+
+  .pp-date {
+    font-size: 9pt;
+    color: #cbd5e1 !important;
+    margin-top: 3px;
+  }
+
+  /* Section label */
+  .pp-section-title {
+    font-size: 12pt;
+    font-weight: 800;
+    color: #0f172a !important;
+    border-bottom: 2px solid #0369a1 !important;
+    padding-bottom: 4px;
+    margin: 18px 0 10px;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Intro */
+  .pp-intro {
+    margin-bottom: 6px;
+  }
+
+  .pp-intro-body {
+    font-size: 10pt;
+    line-height: 1.5;
+    color: #334155 !important;
+  }
+
+  .pp-intro-body h1,
+  .pp-intro-body h2,
+  .pp-intro-body h3 {
+    font-size: 10.5pt;
+    color: #0f172a !important;
+    margin: 6px 0;
+  }
+
+  .pp-intro-body p,
+  .pp-intro-body li {
+    color: #334155 !important;
+  }
+
+  .pp-intro-body ul,
+  .pp-intro-body ol {
+    padding-right: 18px;
+    margin: 6px 0;
+  }
+
+  /* Overview chips */
+  .pp-summary {
+    margin-bottom: 6px;
+  }
+
+  .pp-summary-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .pp-summary-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #f1f5f9 !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 20px;
+    padding: 5px 12px 5px 14px;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .pp-summary-num {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #0369a1 !important;
+    color: #ffffff !important;
+    font-size: 9pt;
+    font-weight: 700;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .pp-summary-name {
+    font-size: 9.5pt;
+    font-weight: 700;
+    color: #0f172a !important;
+  }
+
+  /* Day sections */
+  .pp-day {
+    margin-bottom: 14px;
+    page-break-inside: auto;
+  }
+
+  .pp-day-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #eef6ff !important;
+    border: 1px solid #b8d8f5 !important;
+    border-right: 5px solid #0369a1 !important;
+    border-radius: 8px;
+    padding: 9px 14px;
+    margin: 14px 0 10px;
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .pp-day-badge {
+    background: #0369a1 !important;
+    color: #ffffff !important;
+    font-size: 9pt;
+    font-weight: 800;
+    padding: 3px 10px;
+    border-radius: 20px;
+    flex-shrink: 0;
+  }
+
+  .pp-day-title {
+    font-size: 12.5pt;
+    font-weight: 800;
+    color: #0f172a !important;
+    margin: 0;
+  }
+
+  /* Exercise table */
+  .pp-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0;
+    page-break-inside: auto;
+  }
+
+  .pp-table th {
+    background: #0f172a !important;
+    color: #ffffff !important;
+    font-size: 9pt;
+    font-weight: 700;
+    padding: 7px 10px;
+    text-align: right;
+    border: 1px solid #111827 !important;
+  }
+
+  .pp-table td {
+    font-size: 9.5pt;
+    color: #1e293b !important;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1 !important;
+    vertical-align: top;
+  }
+
+  .pp-table tbody tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .pp-table tbody tr:nth-child(even) {
+    background: #f8fafc !important;
+  }
+
+  .pp-col-num {
+    width: 28px;
+    text-align: center;
+    font-weight: 700;
+    color: #0369a1 !important;
+  }
+
+  .pp-col-ex {
+    width: auto;
+  }
+
+  .pp-col-stat {
+    width: 62px;
+    text-align: center;
+    font-weight: 600;
+  }
+
+  .pp-ex-name {
+    font-weight: 800;
+    color: #0f172a !important;
+    margin-bottom: 2px;
+    font-size: 10pt;
+  }
+
+  .pp-ex-detail {
+    font-size: 8.5pt;
+    color: #475569 !important;
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+
+  .pp-detail-tag {
+    display: inline-block;
+    font-size: 7.5pt;
+    font-weight: 700;
+    color: #0369a1 !important;
+    background: #e0f2fe !important;
+    border: 1px solid #bae6fd !important;
+    border-radius: 3px;
+    padding: 0 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+
+  /* Raw fallback content */
+  .pp-day-raw {
+    font-size: 10pt;
+    line-height: 1.5;
+    color: #1e293b !important;
+  }
+
+  .pp-day-raw h1,
+  .pp-day-raw h2,
+  .pp-day-raw h3 {
+    color: #0f172a !important;
+    font-size: 11pt;
+    margin: 10px 0 6px;
+  }
+
+  .pp-day-raw li,
+  .pp-day-raw p {
+    color: #1e293b !important;
+  }
+
+  /* Footer */
+  .pp-footer {
+    margin-top: 22px;
+    padding-top: 10px;
+    border-top: 1px solid #cbd5e1 !important;
+    text-align: center;
+    font-size: 8.5pt;
+    color: #64748b !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 }
 
