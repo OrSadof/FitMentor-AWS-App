@@ -217,70 +217,10 @@ function parseExercisesFromContent(rawContent) {
   return exercises;
 }
 
-/* ─── Helper: recommend a starting weight (KG) per exercise ───
-   Auto-computed from the user's body weight and fitness level.
-   Returns null for bodyweight-only movements or when no weight is known. */
-function getExerciseWeightPct(title) {
-  const t = (title || '').toLowerCase();
-
-  // Bodyweight-only movements – no external load needed
-  if (/(פלאנק|plank|כפיפות בטן|crunch|שכיבות|push-?up|תלייה|הרמת (ברכיים|רגליים)|ליבה|core|סופרמן|jumping)/.test(t)) return null;
-
-  // Lower-body compound lifts – heaviest relative to body weight
-  if (/(סקוואט|squat|דדליפט|deadlift|leg ?press|לחיצת רגליים|thrust|glute|חטיפה)/.test(t)) return 0.9;
-
-  // Chest press
-  if (/(לחיצת חזה|bench|chest)/.test(t)) return 0.6;
-
-  // Back: rows / pulldowns / pull-ups
-  if (/(חתירה|row|משיכת פולי|pulldown|lat|מתח|pull-?up|chin)/.test(t)) return 0.55;
-
-  // Shoulders: overhead press
-  if (/(לחיצת כתפיים|shoulder|overhead|military)/.test(t)) return 0.4;
-
-  // Legs isolation / lunges / calves
-  if (/(מכרעים|lunge|כפילת ברכיים|leg ?curl|פשיטת ברכיים|leg ?extension|עקבים|calf|הרמת אגן|glute bridge)/.test(t)) return 0.35;
-
-  // Arms isolation (biceps / triceps)
-  if (/(כפילת|bicep|יד קדמית|פשיטת|tricep|יד אחורית|hammer|פטיש)/.test(t)) return 0.2;
-
-  // Lateral raises
-  if (/(הרחקת|lateral|side.?raise)/.test(t)) return 0.1;
-
-  // Default for unclassified movements
-  return 0.4;
-}
-
-function roundToPlate(kg) {
-  return Math.max(1, Math.round(kg / 2.5) * 2.5);
-}
-
-// Compute a per-set weight ramp for a given number of sets: set 1 starts at the
-// base weight and each following set adds a plate (2.5 kg) – a gradual build-up.
-function computePerSetWeights(name, bodyWeightKg, fitnessLevel, numSets) {
-  const pct = getExerciseWeightPct(name);
-  if (pct === null || !bodyWeightKg || bodyWeightKg <= 0) return null;
-
-  const levelFactor = { beginner: 0.8, intermediate: 1.0, advanced: 1.25 }[fitnessLevel] || 1.0;
-  const base = roundToPlate(bodyWeightKg * pct * levelFactor);
-
-  const count = Math.max(1, numSets || 1);
-  return Array.from({ length: count }, (_, i) => Math.max(2.5, roundToPlate(base + i * 2.5)));
-}
-
-function getSuggestedSetWeights(exercise, bodyWeightKg, fitnessLevel) {
-  const setsBadge = (exercise.statsBadges || []).find(b => b.label === 'סטים');
-  const numSets = parseInt(String(setsBadge?.val || '3').replace(/[^\d]/g, ''), 10) || 3;
-  return computePerSetWeights(exercise.title, bodyWeightKg, fitnessLevel, numSets);
-}
-
-function PlanExerciseItem({ ex, bodyWeightKg, fitnessLevel }) {
+function PlanExerciseItem({ ex }) {
   const [isOpen, setIsOpen] = useState(false);
-  // Prefer the exact per-set weights the AI provided in the plan; otherwise fall
-  // back to auto-computed weights based on bodyweight & fitness level.
-  const setWeights = (ex.setWeights && ex.setWeights.length > 0)
-    ? ex.setWeights
-    : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
+  // Display only real, per-set weights generated directly by the DeepSeek AI API
+  const setWeights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
 
   return (
     <div className="plan-exercise-card" data-open={isOpen}>
@@ -482,9 +422,7 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
                         const sets = findBadge(ex, 'סטים');
                         const reps = findBadge(ex, 'חזרות');
                         const rest = findBadge(ex, 'מנוחה');
-                        const weights = (ex.setWeights && ex.setWeights.length > 0)
-                          ? ex.setWeights
-                          : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
+                        const weights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
                         const weightStr = weights
                           ? (new Set(weights).size === 1 ? `${weights[0]}` : weights.join(' / '))
                           : '—';
@@ -1263,7 +1201,6 @@ export function DashboardPage({ user }) {
       } else {
         setPlanHtml(null);
       }
-      // Capture plan params (incl. body weight) if the backend returns them
       if (res?.plan?.params) {
         setPlanParams(res.plan.params);
         try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(res.plan.params)); } catch (e) { }
@@ -1272,7 +1209,6 @@ export function DashboardPage({ user }) {
       console.error('Error loading plan:', err);
       setPlanHtml(null);
     } finally {
-      // Fallback: reuse last known plan params from localStorage
       try {
         const raw = localStorage.getItem(`fitmentor_plan_params_${effectiveEmail}`);
         if (raw) setPlanParams(JSON.parse(raw));
@@ -1290,197 +1226,15 @@ export function DashboardPage({ user }) {
     }
   };
 
-  /* ─── Tailored Multi-Day Workout Plan Generator ─── */
-  function buildTailoredPlanHtml(params) {
-    const { age = 25, gender = 'male', weight = 70, height = 175, fitnessLevel = 'beginner', goal = 'חיטוב וירידה במשקל', days = 3, equipment = 'gym' } = params || {};
-    const numDays = Math.min(Math.max(parseInt(days, 10) || 3, 2), 6);
-
-    const goalTitleMap = {
-      'חיטוב וירידה במשקל': 'חיטוב, שריפת שומן ושימור מסת שריר',
-      'עלייה במסת שריר': 'היפרטרופיה ועלייה במסת שריר נקייה',
-      'שיפור כושר כללי': 'סיבולת לב-ריאה, כושר כללי ובריאות',
-      'אימוני כוח': 'כוח מירבי והתנגדות מתקדמת'
-    };
-
-    const levelNameMap = {
-      beginner: 'מתחילים (0-6 חודשים)',
-      intermediate: 'מתקדמים (6 חודשים - שנתיים)',
-      advanced: 'מקצועיים (מעל שנתיים)'
-    };
-
-    const equipNameMap = {
-      gym: 'חדר כושר מלא',
-      home_dumbbells: 'אימון ביתי עם משקולות יד',
-      bodyweight: 'אימון משקל גוף בלבד'
-    };
-
-    const dayTemplates = [];
-
-    if (numDays === 2) {
-      dayTemplates.push(
-        {
-          title: 'יום 1: אימון גוף מלא (Full Body A) - פלג גוף עליון ותחתון',
-          exercises: [
-            { name: 'סקוואט כנגד ברבל / משקולות', sets: '3', reps: '10-12', rest: '90 שניות', tech: 'שמור על חזה מורם, ברכיים בקו קצות האצבעות, וירד עד 90 מעלות בצורה מבוקרת.', prog: 'העלה 2.5 ק"ג כשתבצע 12 חזרות נקיות בכל הסטים.' },
-            { name: 'לחיצת חזה בשכיבה (Bench Press)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'אחוז בברבל ברוחב כתפיים, הורד באיטיות לחזה התחתון ודחוף למעלה בנשיפה.', prog: 'העלה משקל כשתגיע ל-12 חזרות בקלות.' },
-            { name: 'חתירה בהטיית גו / פולי תחתון', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'גב ישר ב-45 מעלות, משוך את הידיות לכיוון הטבור תוך כווץ שכמות.', prog: 'הוסף משקל לאחר השלמת 3 סטים של 12.' },
-            { name: 'לחיצת כתפיים בעמידה / ישיבה', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'החזק משקולות בגובה הכתפיים, דחוף מעל הראש ללא נעילת מרפקים.', prog: 'העלה משקל כשתבצע 15 חזרות בקלות.' },
-            { name: 'פלאנק סטטי ואימון ליבה', sets: '3', reps: '45-60 שניות', rest: '30 שניות', tech: 'בטן ואחוריים מתוחים, שמור על קו ישר מהראש ועד העקבים.', prog: 'הארך את זמן השהייה ב-10 שניות בכל שבוע.' }
-          ]
-        },
-        {
-          title: 'יום 2: אימון גוף מלא (Full Body B) - כוח וסיבולת שרירית',
-          exercises: [
-            { name: 'רומניאן דדליפט (RDL)', sets: '3', reps: '10-12', rest: '90 שניות', tech: 'כופף את האגן לאחור, גב ישר לגמרי, צמוד לברכיים עד מתיחת המהמסטרינג.', prog: 'הוסף משקל קל כשתבצע 12 חזרות נקיות.' },
-            { name: 'משיכת פולי עליון / מתח באחיזה רחבה', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'חזה מורם קדימה, משוך את הכבל לכיוון החזה העליון תוך כווץ גב רחב.', prog: 'העלה פלטה אחת כשתצליח 12 חזרות.' },
-            { name: 'מכרעים (Lunges) בהליכה עם משקולות', sets: '3', reps: '10 בכל רגל', rest: '60 שניות', tech: 'צעד רחב קדימה, ברך אחורית כמעט נוגעת ברצפה, שמור על גב זקוף.', prog: 'הגדל את משקל המשקולות ב-1-2 ק"ג.' },
-            { name: 'מקבילים / פשיטת מרפקים כנגד כבל (יד אחורית)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'מרפקים צמודים לגוף, פשוט את הזרוע למטה עד כווץ מלא.', prog: 'הוסף משקל כשתבצע 15 חזרות.' },
-            { name: 'כפילת זרועות עם דמבלים (יד קדמית)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'סיבוב פרק כף היד בשיא הכווץ, שמור על מרפקים קבועים בצדי הגוף.', prog: 'העלה משקל קל ברגע שהגעת ל-15 חזרות.' }
-          ]
-        }
-      );
-    } else if (numDays === 3) {
-      dayTemplates.push(
-        {
-          title: 'יום 1: פלג גוף עליון (חזה, כתפיים, גב רחב)',
-          exercises: [
-            { name: 'לחיצת חזה בשכיבה עם ברבל / דמבלים', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'שכב על הספסל עם רגליים שטוחות, אחוז בברבל ברוחב הכתפיים. הורד לאט עד לגובה החזה ודחוף למעלה תוך נשיפה.', prog: 'העלה משקל כשתאתה מבצע 12 חזרות בקלות בשני סטים רצופים.' },
-            { name: 'לחיצת כתפיים עם דמבלים בישיבה', sets: '3', reps: '10-12', rest: '45 שניות', tech: 'שב על ספסל עם משענת, החזק משקולות בגובה הכתפיים ודחוף מעל הראש תוך נשיפה.', prog: 'העלה משקל כשתאתה מבצע 12 חזרות בקלות.' },
-            { name: 'משיכת פולי עליון (גב רחב באחיזה רחבה)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'אחוז את הידיות ברוחב כף היד, משוך את הכבל כלפי החזה תוך שמירה על גב ישר וכווץ שכמות.', prog: 'העלה משקל כשתאתה מבצע 12 חזרות בקלות.' },
-            { name: 'הרחקת זרועות לצדדים עם דמבלים (כתף אמצעית)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'מרפקים מכופפים קלות, הרם את המשקולות בגובה הכתפיים ללא הנפה של הגוף.', prog: 'הוסף חזרה אחת בכל אימון עד להגעה ל-15.' }
-          ]
-        },
-        {
-          title: 'יום 2: פלג גוף תחתון (רגליים, שוקיים, בטן וליבה)',
-          exercises: [
-            { name: 'סקוואט כנגד ברבל / פלג גוף תחתון', sets: '4', reps: '8-10', rest: '90 שניות', tech: 'עמוד ברוחב כתפיים, רד למטה כאילו אתה יושב על כיסא, שמור על גב ישר וברכיים יציבות.', prog: 'העלה משקל ב-2.5 ק"ג כשתגיע ל-10 חזרות נקיות.' },
-            { name: 'לחיצת רגליים במכונה (Leg Press)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'הנח רגליים במרכז הפלטה, דחוף דרך העקבים ואל תנעל ברכיים בקצה התנועה.', prog: 'הוסף פלטה ברגע שהשלמת 12 חזרות.' },
-            { name: 'כפילת ברכיים במכונה (Hamstrings Curl)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'שכב / שב במכונה, כופף את הברכיים תוך כווץ מלא של החלק האחורי של הירך.', prog: 'העלה משקל כשתגיע ל-15 חזרות.' },
-            { name: 'הרמת עקבים בעמידה (שוקיים)', sets: '4', reps: '15-20', rest: '45 שניות', tech: 'עמוד על קצה מדרגה, רד למתיחה מלאה ועלה על קצות האצבעות לכווץ מקסימלי.', prog: 'העלה משקל כשתגיע ל-20 חזרות.' },
-            { name: 'הרמת ברכיים בתלייה / בטן על מזרן', sets: '3', reps: '15', rest: '30 שניות', tech: 'אגוד את השרירים הישרים של הבטן, בצע תנועה איטית ומבוקרת ללא תנופה.', prog: 'הוסף 2 חזרות בכל אימון.' }
-          ]
-        },
-        {
-          title: 'יום 3: אימון כוח וזרועות (גב, חזה, זרועות וכתפיים)',
-          exercises: [
-            { name: 'חתירה כנגד כבל / דמבלים (גב תחתון ואמצעי)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'גב ישר, משוך את המשקולות / ידיות לכיוון המותניים תוך מהדק שכמות לאחור.', prog: 'העלה משקל כשתגיע ל-12 חזרות.' },
-            { name: 'לחיצת חזה בשיפוע חיובי (Incline Press)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'כוונו את הספסל ל-30 מעלות, דחוף את המשקולות כלפי מעלה בשיא הריכוז בחזה העליון.', prog: 'הוסף 1-2 ק"ג כשתבצע 12 חזרות.' },
-            { name: 'פשיטת מרפקים כנגד כבל (יד אחורית - Triceps)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'מרפקים נעולים לצדי הגוף, יישר את הזרוע לחלוטין כלפי מטה.', prog: 'העלה משקל ברגע שהגעת ל-15 חזרות.' },
-            { name: 'כפילת זרועות עם מוט / דמבלים (יד קדמית - Biceps)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'כופף את המרפקים לכיוון הכתפיים, שמור על גוו יציב ללא הנפה.', prog: 'העלה משקל כשתבצע 15 חזרות נקיות.' }
-          ]
-        }
-      );
-    } else if (numDays === 4) {
-      dayTemplates.push(
-        {
-          title: 'יום 1: אימון A1 - חזה, כתפיים ויד אחורית (Push)',
-          exercises: [
-            { name: 'לחיצת חזה בשכיבה עם ברבל', sets: '4', reps: '8-10', rest: '90 שניות', tech: 'אחוז בברבל ברוחב כתפיים, הורד בצורה מבוקרת ודחוף למעלה בנשיפה.', prog: 'העלה משקל כשתשלים 10 חזרות.' },
-            { name: 'לחיצת חזה בשיפוע חיובי עם דמבלים', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'ספסל ב-30 מעלות, דחוף מהחזה העליון ללא נעילת מרפקים.', prog: 'העלה משקל כשתגיע ל-12.' },
-            { name: 'לחיצת כתפיים עם דמבלים', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'דחוף מעל הראש בגילוי יציב.', prog: 'הוסף משקל ברגע שתשלים 12.' },
-            { name: 'פשיטת מרפקים כנגד כבל (יד אחורית)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'יישר את הזרוע למטה עד כווץ מלא.', prog: 'העלה משקל ב-15 חזרות.' }
-          ]
-        },
-        {
-          title: 'יום 2: אימון B1 - גב, יד קדמית ובטן (Pull)',
-          exercises: [
-            { name: 'משיכת פולי עליון / מתח', sets: '4', reps: '8-10', rest: '90 שניות', tech: 'אחוז רחב, משוך לחזה העליון תוך הידוק שכמות.', prog: 'העלה משקל ב-10 חזרות.' },
-            { name: 'חתירה כנגד כבל', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'גב ישר, משוך למותניים.', prog: 'הוסף משקל ב-12 חזרות.' },
-            { name: 'כפילת זרועות עם מוט (יד קדמית)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'מרפקים צמודים, כופף בשיא הריכוז.', prog: 'העלה משקל ב-15.' },
-            { name: 'הרמת רגליים בתלייה (בטן)', sets: '3', reps: '15', rest: '30 שניות', tech: 'הרם רגליים / ברכיים אל החזה בצורה איטית.', prog: 'הוסף חזרות בכל אימון.' }
-          ]
-        },
-        {
-          title: 'יום 3: אימון C1 - רגליים ושוקיים (Legs)',
-          exercises: [
-            { name: 'סקוואט כנגד ברבל', sets: '4', reps: '8-10', rest: '90 שניות', tech: 'גב ישר, ירידה עד 90 מעלות, דחיפה דרך העקבים.', prog: 'העלה משקל ב-10 חזרות.' },
-            { name: 'רומניאן דדליפט (RDL)', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'ציר אגן לאחור, מתיחה מלאה של המהמסטרינג.', prog: 'הוסף משקל ב-12.' },
-            { name: 'לחיצת רגליים במכונה', sets: '3', reps: '10-12', rest: '60 שניות', tech: 'אל תנעל ברכיים בקצה התנועה.', prog: 'העלה משקל ב-12.' },
-            { name: 'הרמת עקבים בעמידה (שוקיים)', sets: '4', reps: '15-20', rest: '45 שניות', tech: 'מתיחה וכווץ מקסימלי.', prog: 'הוסף משקל ב-20 חזרות.' }
-          ]
-        },
-        {
-          title: 'יום 4: אימון D1 - כתפיים, זרועות וליבה (Core & Arms Focus)',
-          exercises: [
-            { name: 'הרחקת זרועות לצדדים עם דמבלים', sets: '4', reps: '12-15', rest: '45 שניות', tech: 'הרם בגובה הכתפיים ללא תנופת גוף.', prog: 'העלה משקל ב-15 חזרות.' },
-            { name: 'פשיטת מרפקים מעל הראש (Overhead Extension)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'מתיחה עמוקה של ראש היד האחורית.', prog: 'הוסף משקל ב-15.' },
-            { name: 'כפילת זרועות פטישים (Hammer Curls)', sets: '3', reps: '12-15', rest: '45 שניות', tech: 'אחיזה ניטרלית, דגש על הזרוע והאמה.', prog: 'העלה משקל ב-15.' },
-            { name: 'פלאנק דינמי והרמת אגן', sets: '3', reps: '60 שניות', rest: '30 שניות', tech: 'בטן מתוחה, גב ישר לגמרי.', prog: 'הארך את הזמן ב-10 שניות.' }
-          ]
-        }
-      );
-    } else {
-      for (let d = 1; d <= numDays; d++) {
-        const dayNames = [
-          'יום 1: אימון חזה וזרוע אחורית (Push A)',
-          'יום 2: אימון גב וזרוע קדמית (Pull A)',
-          'יום 3: אימון רגליים ובטן (Legs A)',
-          'יום 4: אימון כתפיים וחזה עליון (Push B)',
-          'יום 5: אימון גב תחתון, זרועות וליבה (Pull B)',
-          'יום 6: אימון רגליים ממוקד ושוקיים (Legs B)'
-        ];
-        dayTemplates.push({
-          title: dayNames[d - 1] || `יום ${d}: אימון ממוקד ${d}`,
-          exercises: [
-            { name: `תרגיל מוביל ${d}.1 - כוח מירבי`, sets: '4', reps: '8-10', rest: '90 שניות', tech: 'בצע בטכניקה מדויקת ושמור על גב ישר.', prog: 'העלה משקל כשתגיע ל-10 חזרות.' },
-            { name: `תרגיל משלים ${d}.2 - היפרטרופיה`, sets: '3', reps: '10-12', rest: '60 שניות', tech: 'כווץ מלא בשיא התנועה וירידה מבוקרת.', prog: 'הוסף משקל ב-12 חזרות.' },
-            { name: `תרגיל בידוד ${d}.3 - חיזוק ממוקד`, sets: '3', reps: '12-15', rest: '45 שניות', tech: 'תנועה נקייה ללא הנפה.', prog: 'העלה משקל ב-15 חזרות.' },
-            { name: `תרגיל ליבה / שוקיים ${d}.4`, sets: '3', reps: '15-20', rest: '30 שניות', tech: 'כווץ חזק ושליטה מלאה.', prog: 'הוסף חזרות בכל אימון.' }
-          ]
-        });
-      }
-    }
-
-    let html = `<div class="ai-plan-result">
-  <div class="plan-intro">
-    <p>להלן תוכנית האימונים המותאמת אישית למתאמן/ת בגיל ${age}, משקל ${weight} ק"ג, גובה ${height} ס"מ (${levelNameMap[fitnessLevel] || fitnessLevel}) - <strong>${numDays} ימי אימון בשבוע</strong> במטרת <strong>${goalTitleMap[goal] || goal}</strong> (${equipNameMap[equipment] || equipment}):</p>
-  </div>`;
-
-    dayTemplates.forEach((dayObj) => {
-      html += `\n<h3>${dayObj.title}</h3>\n`;
-      dayObj.exercises.forEach((ex) => {
-        const numSets = parseInt(String(ex.sets).replace(/[^\d]/g, ''), 10) || 3;
-        const setW = computePerSetWeights(ex.name, weight, fitnessLevel, numSets);
-        const weightLine = setW
-          ? `<p><strong>משקל מומלץ:</strong> ${setW.map((w, i) => `סט ${i + 1}: ${w} ק"ג`).join(' | ')}</p>\n`
-          : '';
-        html += `<p>🏋️ <strong>${ex.name}</strong></p>
-<p><strong>סטים:</strong> ${ex.sets} | <strong>חזרות:</strong> ${ex.reps} | <strong>מנוחה:</strong> ${ex.rest}</p>
-${weightLine}<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
-<p><strong>התקדמות עומס:</strong> ${ex.prog}</p>\n\n`;
-      });
-    });
-
-    html += `\n</div>`;
-    return html;
-  }
-
   const handleCreatePlan = async (params) => {
     setGenerating(true);
     try {
-      let finalPlanHtml = null;
-      try {
-        const res = await fitmentorApi.generatePlan(effectiveEmail, params);
-        if (res?.plan?.planHtml) {
-          const parsed = parsePlanIntoDays(res.plan.planHtml);
-          const reqDays = parseInt(params.days, 10) || 3;
-          if (parsed.length >= reqDays) {
-            finalPlanHtml = res.plan.planHtml;
-          }
-        }
-      } catch (e) {
-        console.warn('Backend generatePlan call failed, falling back to rich tailored generator:', e);
+      const res = await fitmentorApi.generatePlan(effectiveEmail, params);
+      if (!res?.plan?.planHtml) {
+        throw new Error(res?.message || 'ארעה שגיאה ביצירת תוכנית האימונים ע"י ה-AI. אנא נסה שנית.');
       }
 
-      if (!finalPlanHtml) {
-        finalPlanHtml = buildTailoredPlanHtml(params);
-        try {
-          await fitmentorApi.savePlan(effectiveEmail, finalPlanHtml, params);
-        } catch (saveErr) {
-          console.error('Error saving generated plan:', saveErr);
-        }
-      }
-
+      const finalPlanHtml = res.plan.planHtml;
       setPlanHtml(finalPlanHtml);
       setPlanParams(params);
       try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(params)); } catch (e) { }
@@ -1488,7 +1242,8 @@ ${weightLine}<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
       setShowNewPlanModal(false);
       setOpenDayIndices({});
     } catch (err) {
-      alert('שגיאה ביצירת תוכנית אימונים: ' + err.message);
+      console.error('AI plan generation failed:', err);
+      alert('שגיאה ביצירת תוכנית אימונים ע"י ה-AI: ' + (err.message || 'אנא נסה שוב בעוד מספר שניות.'));
     } finally {
       setGenerating(false);
     }
