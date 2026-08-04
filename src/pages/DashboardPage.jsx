@@ -217,10 +217,70 @@ function parseExercisesFromContent(rawContent) {
   return exercises;
 }
 
-function PlanExerciseItem({ ex }) {
+/* ─── Helper: recommend a starting weight (KG) per exercise ───
+   Auto-computed from the user's body weight and fitness level.
+   Returns null for bodyweight-only movements or when no weight is known. */
+function getExerciseWeightPct(title) {
+  const t = (title || '').toLowerCase();
+
+  // Bodyweight-only movements – no external load needed
+  if (/(פלאנק|plank|כפיפות בטן|crunch|שכיבות|push-?up|תלייה|הרמת (ברכיים|רגליים)|ליבה|core|סופרמן|jumping)/.test(t)) return null;
+
+  // Lower-body compound lifts – heaviest relative to body weight
+  if (/(סקוואט|squat|דדליפט|deadlift|leg ?press|לחיצת רגליים|thrust|glute|חטיפה)/.test(t)) return 0.9;
+
+  // Chest press
+  if (/(לחיצת חזה|bench|chest)/.test(t)) return 0.6;
+
+  // Back: rows / pulldowns / pull-ups
+  if (/(חתירה|row|משיכת פולי|pulldown|lat|מתח|pull-?up|chin)/.test(t)) return 0.55;
+
+  // Shoulders: overhead press
+  if (/(לחיצת כתפיים|shoulder|overhead|military)/.test(t)) return 0.4;
+
+  // Legs isolation / lunges / calves
+  if (/(מכרעים|lunge|כפילת ברכיים|leg ?curl|פשיטת ברכיים|leg ?extension|עקבים|calf|הרמת אגן|glute bridge)/.test(t)) return 0.35;
+
+  // Arms isolation (biceps / triceps)
+  if (/(כפילת|bicep|יד קדמית|פשיטת|tricep|יד אחורית|hammer|פטיש)/.test(t)) return 0.2;
+
+  // Lateral raises
+  if (/(הרחקת|lateral|side.?raise)/.test(t)) return 0.1;
+
+  // Default for unclassified movements
+  return 0.4;
+}
+
+function roundToPlate(kg) {
+  return Math.max(1, Math.round(kg / 2.5) * 2.5);
+}
+
+// Compute a per-set weight ramp for a given number of sets: set 1 starts at the
+// base weight and each following set adds a plate (2.5 kg) – a gradual build-up.
+function computePerSetWeights(name, bodyWeightKg, fitnessLevel, numSets) {
+  const pct = getExerciseWeightPct(name);
+  if (pct === null || !bodyWeightKg || bodyWeightKg <= 0) return null;
+
+  const levelFactor = { beginner: 0.8, intermediate: 1.0, advanced: 1.25 }[fitnessLevel] || 1.0;
+  const base = roundToPlate(bodyWeightKg * pct * levelFactor);
+
+  const count = Math.max(1, numSets || 1);
+  return Array.from({ length: count }, (_, i) => Math.max(2.5, roundToPlate(base + i * 2.5)));
+}
+
+function getSuggestedSetWeights(exercise, bodyWeightKg, fitnessLevel) {
+  const setsBadge = (exercise.statsBadges || []).find(b => b.label === 'סטים');
+  const numSets = parseInt(String(setsBadge?.val || '3').replace(/[^\d]/g, ''), 10) || 3;
+  return computePerSetWeights(exercise.title, bodyWeightKg, fitnessLevel, numSets);
+}
+
+function PlanExerciseItem({ ex, bodyWeightKg, fitnessLevel }) {
   const [isOpen, setIsOpen] = useState(false);
-  // Display only the real, per-set weights generated directly by the AI API
-  const setWeights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
+  // Prefer the exact per-set weights the AI provided in the plan; otherwise fall
+  // back to auto-computed weights based on bodyweight & fitness level.
+  const setWeights = (ex.setWeights && ex.setWeights.length > 0)
+    ? ex.setWeights
+    : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
 
   return (
     <div className="plan-exercise-card" data-open={isOpen}>
@@ -422,7 +482,9 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
                         const sets = findBadge(ex, 'סטים');
                         const reps = findBadge(ex, 'חזרות');
                         const rest = findBadge(ex, 'מנוחה');
-                        const weights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
+                        const weights = (ex.setWeights && ex.setWeights.length > 0)
+                          ? ex.setWeights
+                          : getSuggestedSetWeights(ex, bodyWeightKg, fitnessLevel);
                         const weightStr = weights
                           ? (new Set(weights).size === 1 ? `${weights[0]}` : weights.join(' / '))
                           : '—';
@@ -1377,9 +1439,14 @@ export function DashboardPage({ user }) {
     dayTemplates.forEach((dayObj) => {
       html += `\n<h3>${dayObj.title}</h3>\n`;
       dayObj.exercises.forEach((ex) => {
+        const numSets = parseInt(String(ex.sets).replace(/[^\d]/g, ''), 10) || 3;
+        const setW = computePerSetWeights(ex.name, weight, fitnessLevel, numSets);
+        const weightLine = setW
+          ? `<p><strong>משקל מומלץ:</strong> ${setW.map((w, i) => `סט ${i + 1}: ${w} ק"ג`).join(' | ')}</p>\n`
+          : '';
         html += `<p>🏋️ <strong>${ex.name}</strong></p>
 <p><strong>סטים:</strong> ${ex.sets} | <strong>חזרות:</strong> ${ex.reps} | <strong>מנוחה:</strong> ${ex.rest}</p>
-<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
+${weightLine}<p><strong>דגש טכניקה:</strong> ${ex.tech}</p>
 <p><strong>התקדמות עומס:</strong> ${ex.prog}</p>\n\n`;
       });
     });
