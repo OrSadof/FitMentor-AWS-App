@@ -187,33 +187,23 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי ברמה הגבוהה ביותר. המשימה שלך: לבנות תוכנית אימון שבועית מותאמת אישית.
-  פרטי המתאמן:
-  - גיל: ${age}
-  - מגדר: ${gender === 'male' ? 'זכר' : 'נקבה'}
-  - משקל: ${weight} ק"ג
-  - גובה: ${height} ס"מ
-  - רמת כושר: ${fitnessLevel}
-  - מטרה: ${goal}
-  - מספר ימי אימון בשבוע שנדרש לבנות (חובה בדיוק ${reqDays} ימים!): ${reqDays} ימים
-  - ציוד זמין: ${equipment}
+  const prompt = `אתה מאמן כושר מקצועי. המשימה: לבנות תוכנית אימון מותאמת אישית של בדיוק ${reqDays} ימים.
+  מתאמן: גיל ${age}, מגדר ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
 
-  היסטוריית תוכניות קודמות (סיכום):
-  ${historyContext}
+  כללים קריטיים (חובה!):
+  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה: <h3>יום 1: שם אימון</h3> ... עד <h3>יום ${reqDays}: שם אימון</h3>.
+  2. כמות תרגילים: לתוכנית של 2-3 ימים רשום 4 תרגילים ליום. לתוכנית של 4-6 ימים רשום בדיוק 3 תרגילים מרוכזים ליום.
+  3. חובה: לכל תרגיל (למעט משקל גוף נקי) רשום שורת "משקל מומלץ:" מחושבת לכל סט לפי משקל המתאמן (${weight} ק"ג) ורמתו (${fitnessLevel}).
+  4. שמור על דגשי טכניקה והתקדמות עומס קצרים ביותר (5-8 מילים בלבד לכל דגש) למענה מהיר ללא קטיעה.
 
-  הנחיות קריטיות לבניית התוכנית:
-  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים ומלאים! לכל יום צור כותרת h3 (למשל: <h3>יום 1: אימון דחיפה (Push A)</h3>, <h3>יום 2: אימון משיכה (Pull A)</h3> וכו').
-  2. מספר תרגילים ביום: בתוכנית של 2-3 ימים רשום 5 תרגילים ליום. בתוכנית של 4-6 ימים רשום 3-4 תרגילים מרוכזים ליום אימון, כדי להבטיח תשובה מהירה ומלאה לכל ${reqDays} הימים.
-  3. חובה: לכל תרגיל (למעט תרגילי משקל גוף חופשיים כמו פלאנק או שכיבות סמיכה) רשום שורת "משקל מומלץ:" מחושבת לכל סט באופן אישי לפי משקל הגוף (${weight} ק"ג) ורמת הכושר.
-     פורמט תרגיל חובה:
-     <p>🏋️ <strong>שם התרגיל</strong></p>
-     <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
-     <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 42.5 ק"ג | סט 3: 45 ק"ג</p>
-     <p><strong>דגש טכניקה:</strong> ...</p>
-     <p><strong>התקדמות עומס:</strong> ...</p>
-  4. החזר אך ורק קוד HTML תקין שניתן להזריק לאתר (בתוך div class="ai-plan-result").
-  5. בסוף הוסף div class="plan-tips" עם טיפים לתזונה והתאוששות המתאימים למטרה ולנתונים האישיים.
-  6. אל תכתוב הקדמות או סיומות מחוץ ל-HTML.`;
+  פורמט תרגיל חובה:
+  <p>🏋️ <strong>שם התרגיל</strong></p>
+  <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
+  <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 42.5 ק"ג | סט 3: 45 ק"ג</p>
+  <p><strong>דגש טכניקה:</strong> שבור מקביל וגב זקוף.</p>
+  <p><strong>התקדמות עומס:</strong> העלה 2.5 ק"ג ב-12 חזרות.</p>
+
+  החזר אך ורק קוד HTML בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" קצר. ללא הקדמות.`;
 
   let planHtml = await tryGenerateContent(prompt);
   if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
@@ -534,8 +524,8 @@ function sanitizeUserFacingText(text) {
 
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 40000; // 40-second timeout to allow full plan generation
-const MAX_OUTPUT_TOKENS = 4000; // Expanded token limit so multi-day plans with per-set weights are never truncated
+const API_TIMEOUT_MS = 20000; // Strict 20-second timeout to complete before AWS API Gateway 29s ceiling
+const MAX_OUTPUT_TOKENS = 2500; // Optimized token limit for fast multi-day plan responses
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));

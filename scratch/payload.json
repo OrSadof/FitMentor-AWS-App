@@ -1,0 +1,3 @@
+{
+  "body": "{\"action\":\"generatePlan\",\"userId\":\"test_user_6days\",\"payload\":{\"age\":25,\"gender\":\"male\",\"weight\":75,\"height\":175,\"fitnessLevel\":\"beginner\",\"goal\":\"חיטוב וירידה במשקל\",\"days\":6,\"equipment\":\"gym\"}}"
+}

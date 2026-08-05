@@ -19,22 +19,17 @@ function cleanPlanHtml(html) {
 function looksLikeDayTitle(text) {
   if (!text) return false;
   const t = text.replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
-  if (!t || t.length < 2) return false;
-  // A real workout-day header is ANCHORED: it STARTS with the day marker
-  // (יום / אימון / Day / Workout) or a bare number, followed by a day number
-  // or a Hebrew day name. Anchoring to the start is what stops intro sentences
-  // like "הינה תוכנית אימון של 6 ימים בשבוע" from being mistaken for a day.
-  // (No blacklist here: words like "במטרת" appear inside real day headers and
-  // must NOT disqualify them — that silently collapsed 6 days into 1.)
-  // NOTE: no \b before Hebrew letters — JS \b is ASCII-only and never matches
-  // before a Hebrew letter, which would silently drop every day header.
-  const hebrewDay = 'ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת';
+  if (!t || t.length < 2 || t.length > 130) return false;
+
+  // Filter out tips / nutrition / intro false positives
+  if (/\b(?:טיפים?|תזונה|התאוששות|סיכום|הקדמה|plan-tips)\b/i.test(t)) {
+    return false;
+  }
+
   return (
-    new RegExp(
-      `^(?:יום|אימון|Day|Workout)\\s*[:\-–—.]?\\s*(?:\\d+|${hebrewDay}|[0-9A-Za-z])`,
-      'i'
-    ).test(t) ||
-    /^\s*\d+\s*[:\-–—.]?\s*(?:יום|אימון|Day|Workout)/i.test(t)
+    /^(?:יום|אימון|Day|Workout|Session|חלוקה|חלק)\b/i.test(t) ||
+    /^\s*(?:\d+|[A-Za-z])[.:\)\-–—]/i.test(t) ||
+    /^(?:אימון|יום)/i.test(t)
   );
 }
 

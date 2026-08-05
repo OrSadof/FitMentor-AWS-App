@@ -201,8 +201,8 @@ ${historyContext}
 
 Instructions:
 1. Return valid, clean HTML wrapped in <div class="ai-plan-result">.
-2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: Push</h3>, <h3>Day 2: Pull</h3>, etc.).
-3. Exercise count per day: For 2-3 days split, include 5 exercises/day. For 4-6 days split, include 3 to 4 focused exercises per day so all ${reqDays} days generate quickly and completely without truncation.
+2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: Push</h3>, <h3>Day 2: Pull</h3>... up to <h3>Day ${reqDays}: ...</h3>).
+3. Exercise count per day: For 2-3 days split, include 4-5 exercises/day. For 4-6 days split, include exactly 3 focused exercises per day with 1 short sentence for technique & progression overload so all ${reqDays} days generate ultra-fast without hitting timeouts.
 4. Include a <div class="plan-tips"> section with nutrition and recovery advice.
 5. Do not include markdown formatting, markdown backticks, or intro/outro text.
 
@@ -350,8 +350,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 40000; // 40-second timeout to allow full plan generation
-const MAX_OUTPUT_TOKENS = 4000; // Expanded token limit so multi-day plans with per-set weights are never truncated
+const API_TIMEOUT_MS = 20000; // Strict 20-second timeout to complete before AWS API Gateway 29s ceiling
+const MAX_OUTPUT_TOKENS = 2500; // Optimized token limit for fast multi-day plan responses
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));
