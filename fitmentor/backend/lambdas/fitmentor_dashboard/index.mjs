@@ -354,7 +354,7 @@ function computeProgressSignals(trainingLogs) {
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 950;
+const MAX_OUTPUT_TOKENS = 3500;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));
@@ -396,12 +396,9 @@ async function tryGenerateContent(promptText) {
           { role: "system", content: "You are a concise fitness AI. Immediately return pure HTML for the workout plan. Skip long internal reasoning." },
           { role: "user", content: promptText }
         ],
+        reasoning: { effort: "low" },
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: 0.2,
-        provider: {
-          order: ["DeepSeek", "Together", "Fireworks", "Novita", "Lepton"],
-          allow_fallbacks: true
-        },
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
       })
     });

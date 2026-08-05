@@ -1258,12 +1258,26 @@ export function DashboardPage({ user }) {
   const handleCreatePlan = async (params) => {
     setGenerating(true);
     try {
-      const res = await fitmentorApi.generatePlan(effectiveEmail, params);
-      if (!res?.plan?.planHtml) {
-        throw new Error(res?.message || 'ארעה שגיאה ביצירת תוכנית האימונים ע"י ה-AI. אנא נסה שנית.');
+      let finalPlanHtml = null;
+      try {
+        const res = await fitmentorApi.generatePlan(effectiveEmail, params);
+        if (res?.plan?.planHtml) {
+          finalPlanHtml = res.plan.planHtml;
+        }
+      } catch (genErr) {
+        console.warn('generatePlan HTTP call timed out or failed, polling DB for background completion...', genErr);
+        // Wait 4 seconds for Lambda background execution to finish writing to DynamoDB
+        await new Promise(r => setTimeout(r, 4000));
+        const checkRes = await fitmentorApi.getPlan(effectiveEmail).catch(() => null);
+        if (checkRes?.plan?.planHtml) {
+          finalPlanHtml = checkRes.plan.planHtml;
+        }
       }
 
-      const finalPlanHtml = res.plan.planHtml;
+      if (!finalPlanHtml) {
+        throw new Error('ה-AI במודל DeepSeek חווה עומס זמני. אנא לחץ שוב על "צור תוכנית" בעוד כדקה.');
+      }
+
       setPlanHtml(finalPlanHtml);
       setPlanParams(params);
       try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(params)); } catch (e) { }
@@ -1272,7 +1286,7 @@ export function DashboardPage({ user }) {
       setOpenDayIndices({});
     } catch (err) {
       console.error('AI plan generation failed:', err);
-      alert('שגיאה ביצירת תוכנית אימונים ע"י ה-AI: ' + (err.message || 'אנא נסה שוב בעוד מספר שניות.'));
+      alert(err.message || 'שגיאה ביצירת תוכנית אימונים ע"י ה-AI. אנא נסה שנית.');
     } finally {
       setGenerating(false);
     }
