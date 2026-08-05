@@ -349,9 +349,9 @@ function computeProgressSignals(trainingLogs) {
   return { hasProgress: true, summary: "Consistent workouts logged over recent sessions." };
 }
 
-const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 20000; // Strict 20-second timeout to complete before AWS API Gateway 29s ceiling
-const MAX_OUTPUT_TOKENS = 2500; // Optimized token limit for fast multi-day plan responses
+const DEEPSEEK_MODEL = "google/gemini-2.5-flash";
+const API_TIMEOUT_MS = 22000; // 22-second timeout (safely under API Gateway 29s ceiling)
+const MAX_OUTPUT_TOKENS = 2500;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));

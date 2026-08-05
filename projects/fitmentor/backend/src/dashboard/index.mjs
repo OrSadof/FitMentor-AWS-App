@@ -31,19 +31,19 @@ const PLAN_HISTORY_PREFIX = "PlanHistory_";
 const MAX_PLAN_HISTORY_TO_FETCH = 5;
 
 function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
-  const s = String(planHtml || "").trim();
+  let s = String(planHtml || "").replace(/```(?:html)?/gi, '').replace(/```/g, '').trim();
   if (!s) return false;
   if (s.startsWith("{") && (s.includes('"reply"') || s.includes('"updatedPlanHtml"') || s.includes('"uiAction"'))) {
     return false;
   }
   if (!s.includes("<") || !s.includes(">")) return false;
-  if (!/class\s*=\s*["']ai-plan-result["']/i.test(s)) return false;
+  if (!/class\s*=\s*["']ai-plan-result["']/i.test(s) && !s.includes("<h3") && !s.includes("<h2")) return false;
   const lower = s.toLowerCase();
   if (lower.includes("לא הצלחתי לייצר תוכנית") || lower.includes("לא הצלחתי לטעון תוכנית") || lower.includes("בעיה בתקשורת") || lower.includes("נסה שוב")) {
     return false;
   }
-  const dayHeadings = (s.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []);
-  if (dayHeadings.length < expectedDays) {
+  const dayHeadings = (s.match(/<h[2-4][^>]*>[\s\S]*?(?:יום|אימון|Day|Workout)[\s\S]*?<\/h[2-4]>/gi) || []);
+  if (dayHeadings.length < Math.min(expectedDays, 3)) {
     return false;
   }
 
@@ -187,32 +187,27 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי. המשימה: לבנות תוכנית אימון מותאמת אישית של בדיוק ${reqDays} ימים.
+  const prompt = `אתה מאמן כושר מקצועי. חובתך המוחלטת לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים ומלאים!
+  חל איסור מוחלט להפחית את מספר הימים או להמליץ על פחות ימים (גם אם המתאמן ברמת מתחיל!).
   מתאמן: גיל ${age}, מגדר ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
 
   כללים קריטיים (חובה!):
-  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה: <h3>יום 1: שם אימון</h3> ... עד <h3>יום ${reqDays}: שם אימון</h3>.
-  2. כמות תרגילים: לתוכנית של 2-3 ימים רשום 4 תרגילים ליום. לתוכנית של 4-6 ימים רשום בדיוק 3 תרגילים מרוכזים ליום.
-  3. חובה: לכל תרגיל (למעט משקל גוף נקי) רשום שורת "משקל מומלץ:" מחושבת לכל סט לפי משקל המתאמן (${weight} ק"ג) ורמתו (${fitnessLevel}).
-  4. שמור על דגשי טכניקה והתקדמות עומס קצרים ביותר (5-8 מילים בלבד לכל דגש) למענה מהיר ללא קטיעה.
+  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום צור כותרת h3 מפורשת במבנה:
+     ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
+  2. לכל יום אימון רשום 3 תרגילים מפורטים.
+  3. חובה: לכל תרגיל (למעט משקל גוף נקי כמו פלאנק) רשום שורת "משקל מומלץ:" מחושבת לכל סט באופן אישי לפי משקל המתאמן (${weight} ק"ג) ורמתו (${fitnessLevel}).
+     דוגמה:
+     <p>🏋️ <strong>שם התרגיל</strong></p>
+     <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
+     <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 42.5 ק"ג | סט 3: 45 ק"ג</p>
+     <p><strong>דגש טכניקה:</strong> משפט קצר אחד.</p>
+     <p><strong>התקדמות עומס:</strong> משפט קצר אחד.</p>
 
-  פורמט תרגיל חובה:
-  <p>🏋️ <strong>שם התרגיל</strong></p>
-  <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
-  <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 42.5 ק"ג | סט 3: 45 ק"ג</p>
-  <p><strong>דגש טכניקה:</strong> שבור מקביל וגב זקוף.</p>
-  <p><strong>התקדמות עומס:</strong> העלה 2.5 ק"ג ב-12 חזרות.</p>
-
-  החזר אך ורק קוד HTML בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" קצר. ללא הקדמות.`;
+  החזר אך ורק קוד HTML תקין בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" עם טיפים לתזונה והתאוששות. ללא הקדמות.`;
 
   let planHtml = await tryGenerateContent(prompt);
   if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    console.warn(`Initial plan output failed validation (expected ${reqDays} days). Retrying...`);
-    planHtml = await tryGenerateContent(prompt + "\nחשוב מאוד: אל תעצור באמצע, השלם את כל " + reqDays + " ימי האימון במלואם!");
-  }
-
-  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    throw new Error(`ה-AI לא הצליח לייצר תוכנית מלאה עבור ${reqDays} ימים. אנא נסה שוב.`);
+    throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");
@@ -523,9 +518,9 @@ function sanitizeUserFacingText(text) {
 }
 
 
-const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 20000; // Strict 20-second timeout to complete before AWS API Gateway 29s ceiling
-const MAX_OUTPUT_TOKENS = 2500; // Optimized token limit for fast multi-day plan responses
+const DEEPSEEK_MODEL = "google/gemini-2.5-flash";
+const API_TIMEOUT_MS = 22000; // 22-second timeout (safely under API Gateway 29s ceiling)
+const MAX_OUTPUT_TOKENS = 2500;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
