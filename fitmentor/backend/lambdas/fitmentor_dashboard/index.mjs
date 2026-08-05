@@ -201,8 +201,8 @@ ${historyContext}
 
 Instructions:
 1. Return valid, clean HTML wrapped in <div class="ai-plan-result">.
-2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: ...</h3>, <h3>Day 2: ...</h3>, <h3>Day 3: ...</h3>).
-3. Under each day, include 4 to 6 detailed exercises with sets, reps, rest times, technique tips, progressive overload notes, and per-set recommended weights.
+2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: Push</h3>, <h3>Day 2: Pull</h3>, etc.).
+3. Exercise count per day: For 2-3 days split, include 5 exercises/day. For 4-6 days split, include 3 to 4 focused exercises per day so all ${reqDays} days generate quickly and completely without truncation.
 4. Include a <div class="plan-tips"> section with nutrition and recovery advice.
 5. Do not include markdown formatting, markdown backticks, or intro/outro text.
 

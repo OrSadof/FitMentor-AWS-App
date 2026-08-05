@@ -15,57 +15,51 @@ function cleanPlanHtml(html) {
 
 /* ─── Helper: parse plan HTML/text into day-sections ─── */
 function parsePlanIntoDays(html) {
-  if (!html) return [];
+  if (!html) return { intro: null, days: [] };
 
   const cleaned = html.replace(/```(?:html)?/gi, '').replace(/```/g, '').trim();
 
-  // Strict Day Header Regex:
-  // MUST start with an HTML header tag (<h1-4>), markdown header (###), bold header (**), or be at the very start of a line.
-  // Must NOT match inline words like "3 ימי אימון בשבוע" inside regular paragraphs (<p>).
-  const dayHeaderRegex = /(?:<h[1-4][^>]*>|###?\s*|^\s*\*\*\s*|^|\n)\s*(?:<\w+[^>]*>)*\s*((?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]['']?|[A-Z]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)[^<\n*]*)/gi;
-
-  const matches = [];
-  let match;
-  while ((match = dayHeaderRegex.exec(cleaned)) !== null) {
-    const rawMatchText = match[1] || match[0];
-    const candidate = rawMatchText.replace(/<[^>]*>/g, '').replace(/\*+/g, '').trim();
-
-    // Exclude false positives like "3 ימי אימון בשבוע"
-    const isFalsePositive = candidate.includes('אימון בשבוע') || candidate.includes('ימי אימון') || candidate.includes('במטרת');
-
-    if (candidate.length >= 3 && candidate.length < 110 && !isFalsePositive) {
-      if (!matches.some(m => Math.abs(m.index - match.index) < 10)) {
-        matches.push({
-          title: candidate,
-          index: match.index,
-          fullLength: match[0].length
-        });
-      }
+  // Strategy 1: Match <h3> headers (e.g., <h3>יום 1: אימון דחיפה</h3>)
+  const h3Regex = /<h3[^>]*>([\s\S]*?)<\/h3>/gi;
+  const h3Matches = [];
+  let m;
+  while ((m = h3Regex.exec(cleaned)) !== null) {
+    const rawTitle = m[1].replace(/<[^>]*>/g, '').replace(/\*+/g, '').trim();
+    const isFalsePos = rawTitle.includes('אימון בשבוע') || rawTitle.includes('ימי אימון') || rawTitle.includes('במטרת');
+    if (rawTitle.length >= 2 && rawTitle.length < 120 && !isFalsePos) {
+      h3Matches.push({
+        title: rawTitle,
+        index: m.index,
+        endIndex: m.index + m[0].length
+      });
     }
   }
 
-  // Fallback: If fewer than 2 days matched with keywords, try splitting by <h2> or <h3> HTML tags
+  // Strategy 2: If < 2 <h3> tags found, match "יום X" or "אימון X" regex
+  let matches = h3Matches;
   if (matches.length < 2) {
-    const hRegex = /<h[2-3][^>]*>(.*?)<\/h[2-3]>/gi;
-    const hMatches = [];
-    while ((match = hRegex.exec(cleaned)) !== null) {
-      const titleText = match[1].replace(/<[^>]*>/g, '').trim();
-      const isFalsePos = titleText.includes('אימון בשבוע') || titleText.includes('ימי אימון');
-      if (titleText.length > 2 && titleText.length < 100 && !isFalsePos) {
-        hMatches.push({
-          title: titleText,
-          index: match.index,
-          fullLength: match[0].length
-        });
+    const dayHeaderRegex = /(?:<h[1-4][^>]*>|###?\s*|^\s*\*\*\s*|^|\n)\s*(?:<\w+[^>]*>)*\s*((?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]['']?|[A-Z]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)[^<\n*]*)/gi;
+    const fallbackMatches = [];
+    while ((m = dayHeaderRegex.exec(cleaned)) !== null) {
+      const rawText = m[1] || m[0];
+      const candidate = rawText.replace(/<[^>]*>/g, '').replace(/\*+/g, '').trim();
+      const isFalsePos = candidate.includes('אימון בשבוע') || candidate.includes('ימי אימון') || candidate.includes('במטרת');
+      if (candidate.length >= 3 && candidate.length < 110 && !isFalsePos) {
+        if (!fallbackMatches.some(f => Math.abs(f.index - m.index) < 10)) {
+          fallbackMatches.push({
+            title: candidate,
+            index: m.index,
+            endIndex: m.index + m[0].length
+          });
+        }
       }
     }
-    if (hMatches.length >= 2) {
-      matches.length = 0;
-      matches.push(...hMatches);
+    if (fallbackMatches.length >= 2) {
+      matches = fallbackMatches;
     }
   }
 
-  if (matches.length === 0) return { intro: null, days: [] }; // Fallback to raw plan view
+  if (matches.length === 0) return { intro: null, days: [] };
 
   const days = [];
   let intro = null;
@@ -80,9 +74,13 @@ function parsePlanIntoDays(html) {
 
   for (let i = 0; i < matches.length; i++) {
     const title = matches[i].title;
-    const contentStart = matches[i].index + matches[i].fullLength;
+    const contentStart = matches[i].endIndex;
     const contentEnd = i + 1 < matches.length ? matches[i + 1].index : cleaned.length;
-    const rawContent = cleaned.substring(contentStart, contentEnd).trim();
+    let rawContent = cleaned.substring(contentStart, contentEnd).trim();
+
+    // Strip trailing plan-tips or closing div tags from the last day's content
+    rawContent = rawContent.replace(/<div\s+class=["']plan-tips["'][\s\S]*$/i, '').trim();
+    rawContent = rawContent.replace(/<\/div>\s*$/i, '').trim();
 
     days.push({
       title,
@@ -112,32 +110,36 @@ function parseSetWeightsFromLine(line) {
 function parseExercisesFromContent(rawContent) {
   if (!rawContent) return [];
 
-  const cleanStr = str => str ? str.replace(/<[^>]*>/g, '').replace(/\*+/g, '').trim() : '';
+  const tagBreakRegex = /<\/p>|<br\s*\/?>|<\/h[1-6]>|<\/li>|<\/div>/gi;
+  const stripTagRegex = /<[^>]*>/g;
 
-  // Standardize tag breaks into newlines
-  const tagBreakRegex = new RegExp('</p>|<br\\s*/?>|</h[1-6]>|</li>|</div>', 'gi');
-  const stripTagRegex = new RegExp('<[^>]*>', 'g');
-  const formattedText = rawContent
+  const lines = rawContent
     .replace(tagBreakRegex, '\n')
-    .replace(stripTagRegex, ' ');
-
-  const lines = formattedText
+    .replace(stripTagRegex, ' ')
     .split('\n')
-    .map(l => cleanStr(l))
+    .map(l => l.replace(/\*+/g, '').trim())
     .filter(l => l.length > 0);
 
   const exercises = [];
   let currentEx = null;
 
   lines.forEach(line => {
-    // Check if line is an Exercise Header
-    const isHeader = line.includes('🏋️') ||
-      (/^(?:תרגיל|\d+[\.\)]|לחיצת|סקוואט|דדליפט|משכת|מתח|חתירה|כפילת|פשיטת|הרמת|מכרעים|פלאנק|רומניאן|מקבילים)/.test(line) && !line.includes(':'));
+    const isWeightLine = line.includes('משקל') || /^weight/i.test(line);
+    const isTechLine = line.includes('דגש') || line.includes('טכניקה');
+    const isProgLine = line.includes('התקדמות') || line.includes('עומס');
+    const isStatsLine = (line.includes('סטים') || line.includes('חזרות') || line.includes('מנוחה')) && !line.includes('העלה') && !line.includes('כשתבצע') && !line.includes('כשאתה');
+
+    const isHeader = line.includes('🏋️') || line.includes('🏋') || (
+      !isWeightLine && !isTechLine && !isProgLine && !isStatsLine &&
+      (/^(?:\d+[\.\)\-]|תרגיל\s*\d*|סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|פלאנק|מקבילים|פרפר|היפ\s*תראסט)/i.test(line) ||
+       /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|פלאנק|מקבילים|פרפר)/i.test(line))
+    );
 
     if (isHeader) {
       if (currentEx) exercises.push(currentEx);
+      const cleanTitle = line.replace(/^🏋️?\s*/, '').replace(/^\d+[\.\)\-]\s*/, '').replace(/[\:\-\–\—]$/, '').trim();
       currentEx = {
-        title: line.replace(/^🏋️\s*/, '').trim(),
+        title: cleanTitle || line,
         statsBadges: [],
         technique: '',
         progression: '',
@@ -148,8 +150,9 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (!currentEx) {
+      if (line.includes('יום') || line.includes('אימון')) return;
       currentEx = {
-        title: line.includes('יום') ? 'תרגילי האימון' : line,
+        title: line,
         statsBadges: [],
         technique: '',
         progression: '',
@@ -159,8 +162,7 @@ function parseExercisesFromContent(rawContent) {
       return;
     }
 
-    // Parse Recommended Weight per set (KG) – provided by the AI in the plan
-    if (line.includes('משקל') || /^weight\s*[:\-]/i.test(line)) {
+    if (isWeightLine) {
       const setWeights = parseSetWeightsFromLine(line);
       if (setWeights && setWeights.length > 0) {
         currentEx.setWeights = setWeights;
@@ -170,20 +172,17 @@ function parseExercisesFromContent(rawContent) {
       return;
     }
 
-    // Parse Technique Focus
-    if (line.includes('דגש טכניקה') || line.includes('טכניקה:')) {
-      currentEx.technique = line.replace(/^.*(?:דגש טכניקה|טכניקה)\s*[:\-]\s*/, '').trim();
+    if (isTechLine) {
+      currentEx.technique = line.replace(/^.*(?:דגש טכניקה|טכניקה|דגש)\s*[:\-–—]?\s*/, '').trim();
       return;
     }
 
-    // Parse Progressive Overload Focus
-    if (line.includes('התקדמות עומס') || line.includes('עומס:')) {
-      currentEx.progression = line.replace(/^.*(?:התקדמות עומס|עומס)\s*[:\-]\s*/, '').trim();
+    if (isProgLine) {
+      currentEx.progression = line.replace(/^.*(?:התקדמות עומס|התקדמות|עומס)\s*[:\-–—]?\s*/, '').trim();
       return;
     }
 
-    // Parse Stats (סטים, חזרות, מנוחה)
-    if ((line.includes('סטים') || line.includes('חזרות') || line.includes('מנוחה')) && !line.includes('העלה') && !line.includes('כשתבצע')) {
+    if (isStatsLine) {
       const parts = line.split(/\||;/);
       parts.forEach(p => {
         const trimmedP = p.trim();
