@@ -18,18 +18,23 @@ function cleanPlanHtml(html) {
    "plan-tips" block (whose <h3> must never be treated as a day). */
 function looksLikeDayTitle(text) {
   if (!text) return false;
-  // Intro / tips / summary phrases are NOT workout days
-  if (/\bימי אימון\b|אימון בשבוע|במטרת|טיפ|תזונה|התאוששות|סיכום|הקדמה|התחלה/.test(text)) {
-    return false;
-  }
   const t = text.replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
-  if (!t) return false;
-  // "יום 1: ...", "אימון 2 ...", "Day 1: Push", "Workout 3", "יום שלישי", "אימון חזה"
+  if (!t || t.length < 2) return false;
+  // A real workout-day header is ANCHORED: it STARTS with the day marker
+  // (יום / אימון / Day / Workout) or a bare number, followed by a day number
+  // or a Hebrew day name. Anchoring to the start is what stops intro sentences
+  // like "הינה תוכנית אימון של 6 ימים בשבוע" from being mistaken for a day.
+  // (No blacklist here: words like "במטרת" appear inside real day headers and
+  // must NOT disqualify them — that silently collapsed 6 days into 1.)
   // NOTE: no \b before Hebrew letters — JS \b is ASCII-only and never matches
   // before a Hebrew letter, which would silently drop every day header.
+  const hebrewDay = 'ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת';
   return (
-    /(?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת|[A-Za-z])/i.test(t) ||
-    /^\s*\d+\s*[:.\-–—]?\s*(?:יום|אימון|Day|Workout)/i.test(t)
+    new RegExp(
+      `^(?:יום|אימון|Day|Workout)\\s*[:\-–—.]?\\s*(?:\\d+|${hebrewDay}|[0-9A-Za-z])`,
+      'i'
+    ).test(t) ||
+    /^\s*\d+\s*[:\-–—.]?\s*(?:יום|אימון|Day|Workout)/i.test(t)
   );
 }
 
@@ -57,7 +62,7 @@ function parsePlanIntoDays(html) {
   // Strategy 2: fall back to a free-form "יום X / אימון X" heading regex
   let matches = headerMatches;
   if (matches.length < 2) {
-    const dayHeaderRegex = /(?:<h[1-6][^>]*>|###?\s*|^\s*\*\*\s*|^|\n)\s*(?:<\w+[^>]*>)*\s*((?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]['']?|[A-Z]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)[^<\n*]*)/gi;
+    const dayHeaderRegex = /(?:<[a-zA-Z][^>]*>|###?\s*|^\s*\*\*\s*|^|\n)\s*(?:<\w+[^>]*>)*\s*((?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]['']?|[A-Z]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)[^<\n*]*)/gi;
     const fallbackMatches = [];
     while ((m = dayHeaderRegex.exec(cleaned)) !== null) {
       const candidate = (m[1] || m[0]).replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
@@ -1294,6 +1299,15 @@ export function DashboardPage({ user }) {
   const parsedPlan = parsePlanIntoDays(cleanedPlan);
   const planDays = parsedPlan.days || [];
   const planIntro = parsedPlan.intro || null;
+
+  // Diagnostics: if a plan splits into very few days, dump the raw AI HTML so
+  // the exact format can be seen (this earlier hid a "header contains goal"
+  // case that collapsed 6 days into 1).
+  if (planDays.length <= 2 && cleanedPlan) {
+    console.warn('[FitMentor] plan parsed into only', planDays.length, 'day(s).',
+      'titles=', planDays.map((d) => d.title),
+      'RAW_HTML=', cleanedPlan.slice(0, 2500));
+  }
 
   // Body weight & fitness level for the suggested weight-per-set
   const introWeightMatch = cleanedPlan.match(/משקל\s*(\d+(?:\.\d+)?)\s*ק"ג/);
