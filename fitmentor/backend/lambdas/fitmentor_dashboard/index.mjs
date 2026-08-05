@@ -352,9 +352,9 @@ function computeProgressSignals(trainingLogs) {
   return { hasProgress: true, summary: "Consistent workouts logged over recent sessions." };
 }
 
-const DEEPSEEK_MODEL = "deepseek/deepseek-chat";
+const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 1200;
+const MAX_OUTPUT_TOKENS = 950;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));
@@ -364,12 +364,17 @@ async function tryGenerateContent(promptText) {
     console.error("Missing OPENROUTER_API_KEY for DeepSeek execution.");
     if (isJsonChat) {
       return JSON.stringify({
-        reply: "Error: OPENROUTER_API_KEY environment variable is missing.",
+        reply: "שגיאת הגדרה: מפתח OPENROUTER_API_KEY חסר במערכת.",
         updatedPlanHtml: null,
         uiAction: null,
       });
     }
-    return `<div class="ai-plan-result"><h3>AI Communication Error</h3><p>OPENROUTER_API_KEY is missing in AWS Lambda environment.</p></div>`;
+    return `
+<div class="ai-plan-result">
+  <h3>שגיאה בתקשורת עם ה-AI</h3>
+  <p>מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.</p>
+</div>
+`.trim();
   }
 
   const controller = new AbortController();
@@ -387,11 +392,14 @@ async function tryGenerateContent(promptText) {
       },
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        messages: [{ role: "user", content: promptText }],
+        messages: [
+          { role: "system", content: "You are a concise fitness AI. Immediately return pure HTML for the workout plan. Skip long internal reasoning." },
+          { role: "user", content: promptText }
+        ],
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.7,
+        temperature: 0.2,
         provider: {
-          order: ["DeepSeek", "Fireworks", "Together", "Novita", "Lepton"],
+          order: ["DeepSeek", "Together", "Fireworks", "Novita", "Lepton"],
           allow_fallbacks: true
         },
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})

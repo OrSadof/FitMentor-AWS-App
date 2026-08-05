@@ -190,20 +190,15 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי. חובתך לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
-  מתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
-
-  כללים (חובה!):
-  1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה:
+  const prompt = `אתה מאמן כושר. בנה תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים (משקל ${weight} ק"ג, רמה ${fitnessLevel}).
+  חובה: צור בדיוק ${reqDays} ימים. לכל יום כותרת h3 מפורשת במבנה:
      ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
-  2. לכל יום אימון 3 תרגילים.
-  3. לכל תרגיל רשום:
-     <p>🏋️ <strong>שם התרגיל</strong></p>
-     <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
-     <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
-     (חשב את המשקלים X,Y,Z אישית לפי משקל המתאמן ${weight} ק"ג ורמתו).
+  לכל יום רשום 2 תרגילים ממוקדים בפורמט קומפקטי:
+  <p>🏋️ <strong>שם התרגיל</strong> | 3 סטים x 10 חזרות</p>
+  <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
+  (חשב את המשקלים X,Y,Z אישית לפי משקל המתאמן ${weight} ק"ג ורמתו).
 
-  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" קצר עם טיפים. ללא טקסט חופשי או הקדמות.`;
+  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף div class="plan-tips" קצר. ללא הקדמות.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
   const t0 = Date.now();
@@ -503,9 +498,9 @@ function computeProgressSignals(trainingLogs) {
   };
 }
 
-const DEEPSEEK_MODEL = "deepseek/deepseek-chat";
+const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 1200;
+const MAX_OUTPUT_TOKENS = 950;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
@@ -543,11 +538,14 @@ async function tryGenerateContent(promptText) {
       },
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        messages: [{ role: "user", content: promptText }],
+        messages: [
+          { role: "system", content: "You are a concise fitness AI. Immediately return pure HTML for the workout plan. Skip long internal reasoning." },
+          { role: "user", content: promptText }
+        ],
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.7,
+        temperature: 0.2,
         provider: {
-          order: ["DeepSeek", "Fireworks", "Together", "Novita", "Lepton"],
+          order: ["DeepSeek", "Together", "Fireworks", "Novita", "Lepton"],
           allow_fallbacks: true
         },
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
