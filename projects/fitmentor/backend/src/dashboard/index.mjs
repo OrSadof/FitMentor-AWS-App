@@ -190,15 +190,19 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר. בנה תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים (משקל ${weight} ק"ג, רמה ${fitnessLevel}).
-  חובה: צור בדיוק ${reqDays} ימים. לכל יום כותרת h3 מפורשת במבנה:
-     ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
-  לכל יום רשום 2 תרגילים ממוקדים בפורמט קומפקטי:
-  <p>🏋️ <strong>שם התרגיל</strong> | 3 סטים x 10 חזרות</p>
-  <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
-  (חשב את המשקלים X,Y,Z אישית לפי משקל המתאמן ${weight} ק"ג ורמתו).
+  const prompt = `אתה מאמן כושר מקצועי. חובתך לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
+  מתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
 
-  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף div class="plan-tips" קצר. ללא הקדמות.`;
+  כללים (חובה!):
+  1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה:
+     ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
+  2. לכל יום אימון 3 תרגילים מלאים ומגוונים.
+  3. לכל תרגיל רשום:
+     <p>🏋️ <strong>שם התרגיל</strong> | 3 סטים x 10-12 חזרות | מנוחה: 60-90 שניות</p>
+     <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
+     (חשב את המשקלים X,Y,Z 100% אישית ומדויקת לפי משקל המתאמן ${weight} ק"ג ורמתו).
+
+  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" מפורט עם טיפים. ללא הקדמות.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
   const t0 = Date.now();
