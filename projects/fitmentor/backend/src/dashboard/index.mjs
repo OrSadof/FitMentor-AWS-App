@@ -190,22 +190,22 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי. חובתך לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
-  מתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
+  const prompt = `אתה מאמן כושר בכיר. חובתך לבנות תוכנית אימון שבועית מקיפה, מפורטת ומותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
+  פרטי המתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר: ${fitnessLevel}, מטרה: ${goal}, ציוד זמין: ${equipment}.
 
-  כללים (חובה!):
+  כללים נחרצים (חובה!):
   1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה:
      ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
-  2. לכל יום אימון 3 תרגילים מפורטים.
-  3. לכל תרגיל רשום בדיוק בפורמט הבא:
-     <p>🏋️ <strong>שם התרגיל</strong></p>
-     <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60-90 שניות</p>
+  2. לכל יום אימון צור 3 תרגילים מפורטים, מקצועיים ומלאים.
+  3. לכל תרגיל רשום בפורמט ה-HTML הבא:
+     <p>🏋️ <strong>שם התרגיל (שם באנגלית)</strong></p>
+     <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 10-12 חזרות | <strong>מנוחה:</strong> 60-90 שניות מנוחה בין סטים</p>
      <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
-     <p><strong>דגש טכניקה:</strong> דגש קצר לביצוע מדויק של התרגיל</p>
-     <p><strong>התקדמות עומס:</strong> טיפ קצר להעלאת משקל באימון הבא</p>
-     (חשב את המשקלים X,Y,Z 100% אישית ומדויקת לפי משקל המתאמן ${weight} ק"ג ורמתו).
+     <p><strong>איך מבצעים ודגשי טכניקה:</strong> הסבר מפורט על אופן ביצוע התרגיל והסטים, מנח גוף ונשימה נכונה.</p>
+     <p><strong>התקדמות עומס והסבר:</strong> הסבר מדוע נבחרו המשקלים הללו ואיך להעלות עומס באימונים הבאים.</p>
+     (חשב את המשקלים X,Y,Z 100% אישית לפי משקל המתאמן ${weight} ק"ג ורמתו. לתרגילי אירובי/משקל גוף רשום משקל גוף או זמן).
 
-  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" מפורט עם טיפים. ללא הקדמות.`;
+  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" מפורט עם טיפים לתזונה והתאוששות. ללא הקדמות.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
   const t0 = Date.now();

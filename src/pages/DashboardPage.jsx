@@ -134,18 +134,17 @@ function parseExercisesFromContent(rawContent) {
 
   const isStatsLine = (line) =>
     (line.includes('סטים') || line.includes('חזרות') || line.includes('מנוחה')) &&
-    !line.includes('העלה') && !line.includes('כשתבצע') && !line.includes('כשאתה');
+    !line.includes('העלה') && !line.includes('כשתבצע') && !line.includes('כשאתה') && !line.includes('טכניקה');
 
   const isWeightLine = (line) => line.includes('משקל') || /^weight/i.test(line);
-  const isTechLine = (line) => line.includes('דגש') || line.includes('טכניקה');
-  const isProgLine = (line) => line.includes('התקדמות') || line.includes('עומס');
+  const isTechLine = (line) => line.includes('דגש') || line.includes('טכניקה') || line.includes('איך מבצעים') || line.includes('ביצוע');
+  const isProgLine = (line) => line.includes('התקדמות') || line.includes('עומס') || line.includes('הסבר');
 
-  // Line is one of the known "detail" rows → it belongs to the current exercise
   const isDetailLine = (line) =>
     isWeightLine(line) || isTechLine(line) || isProgLine(line) || isStatsLine(line);
 
   const broadExerciseKeyword =
-    /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|מקבילים|פרפר|היפ|תלת|דו\s*-?\s*ראשי|בייספס|טרייספס|כתפיי?ם|יד\s*(אחורית|קדמית)|רגליי?ם|שוקיי?ם|חזה|גב|זרוע|בטן|פלאנק|תרגיל)/i;
+    /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|מקבילים|פרפר|היפ|תלת|דו\s*-?\s*ראשי|בייספס|טרייספס|כתפיי?ם|יד\s*(אחורית|קדמית)|רגליי?ם|שוקיי?ם|חזה|גב|זרוע|בטן|פלאנק|תרגיל|אופניים)/i;
 
   const exercises = [];
   let currentEx = null;
@@ -167,23 +166,29 @@ function parseExercisesFromContent(rawContent) {
     const parts = partStr.split(/\||;/);
     parts.forEach(p => {
       const trimmedP = p.trim();
+      if (!trimmedP) return;
+
       if (trimmedP.includes('סטים')) {
-        const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/, '').trim();
+        const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/i, '').trim();
         if (val && !ex.statsBadges.some(b => b.label === 'סטים')) {
           ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
         }
       } else if (trimmedP.includes('חזרות')) {
-        const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/, '').trim();
+        const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/i, '').trim();
         const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s\.\,]+|[\s\.\,]+$/g, '');
         if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal) && !ex.statsBadges.some(b => b.label === 'חזרות')) {
           ex.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
         }
       } else if (trimmedP.includes('מנוחה')) {
-        const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/, '').trim();
+        const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/i, '').trim();
         if (val && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
           ex.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
         }
-      } else if (trimmedP.length > 0) {
+      } else if (trimmedP.includes('דקות') || trimmedP.includes('זמן') || trimmedP.includes('שניות')) {
+        if (!ex.statsBadges.some(b => b.label === 'זמן')) {
+          ex.statsBadges.push({ label: 'זמן', val: trimmedP, type: 'purple' });
+        }
+      } else {
         ex.extraDetails.push(trimmedP);
       }
     });
@@ -194,7 +199,7 @@ function parseExercisesFromContent(rawContent) {
       line.includes('🏋️') || line.includes('🏋') ||
       /^\d+[\.\)\-:]\s*/.test(line) ||
       (!isDetailLine(line) && broadExerciseKeyword.test(line)) ||
-      (!isDetailLine(line) && line.length <= 60); // short non-detail line = exercise title
+      (!isDetailLine(line) && line.length <= 60);
 
     if (isHeader) {
       let rawTitle = line
@@ -239,12 +244,12 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (isTechLine(line)) {
-      currentEx.technique = line.replace(/^.*(?:דגש טכניקה|טכניקה|דגש)\s*[:\-–—]?\s*/, '').trim();
+      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש)\s*[:\-–—]?\s*/i, '').trim();
       return;
     }
 
     if (isProgLine(line)) {
-      currentEx.progression = line.replace(/^.*(?:התקדמות עומס|התקדמות|עומס)\s*[:\-–—]?\s*/, '').trim();
+      currentEx.progression = line.replace(/^.*(?:התקדמות\s*עומס(?:\s*והסבר)?|התקדמות|עומס|הסבר)\s*[:\-–—]?\s*/i, '').trim();
       return;
     }
 
