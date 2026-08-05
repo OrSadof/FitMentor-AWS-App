@@ -1,3 +1,6 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -349,9 +352,9 @@ function computeProgressSignals(trainingLogs) {
   return { hasProgress: true, summary: "Consistent workouts logged over recent sessions." };
 }
 
-const DEEPSEEK_MODEL = "google/gemini-2.5-flash";
-const API_TIMEOUT_MS = 22000; // 22-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 2500;
+const DEEPSEEK_MODEL = "deepseek/deepseek-chat";
+const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
+const MAX_OUTPUT_TOKENS = 1200;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));
@@ -387,6 +390,10 @@ async function tryGenerateContent(promptText) {
         messages: [{ role: "user", content: promptText }],
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: 0.7,
+        provider: {
+          order: ["DeepSeek", "Fireworks", "Together", "Novita", "Lepton"],
+          allow_fallbacks: true
+        },
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
       })
     });

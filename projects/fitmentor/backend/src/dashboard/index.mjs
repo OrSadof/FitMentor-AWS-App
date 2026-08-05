@@ -1,3 +1,6 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
@@ -187,26 +190,28 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר מקצועי. חובתך המוחלטת לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים ומלאים!
-  חל איסור מוחלט להפחית את מספר הימים או להמליץ על פחות ימים (גם אם המתאמן ברמת מתחיל!).
-  מתאמן: גיל ${age}, מגדר ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
+  const prompt = `אתה מאמן כושר מקצועי. חובתך לבנות תוכנית אימון שבועית מותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
+  מתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמה ${fitnessLevel}, מטרה ${goal}, ציוד ${equipment}.
 
-  כללים קריטיים (חובה!):
-  1. חובה ליצור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום צור כותרת h3 מפורשת במבנה:
+  כללים (חובה!):
+  1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה:
      ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
-  2. לכל יום אימון רשום 3 תרגילים מפורטים.
-  3. חובה: לכל תרגיל (למעט משקל גוף נקי כמו פלאנק) רשום שורת "משקל מומלץ:" מחושבת לכל סט באופן אישי לפי משקל המתאמן (${weight} ק"ג) ורמתו (${fitnessLevel}).
-     דוגמה:
+  2. לכל יום אימון 3 תרגילים.
+  3. לכל תרגיל רשום:
      <p>🏋️ <strong>שם התרגיל</strong></p>
      <p><strong>סטים:</strong> 3 | <strong>חזרות:</strong> 10-12 | <strong>מנוחה:</strong> 60 שניות</p>
-     <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 42.5 ק"ג | סט 3: 45 ק"ג</p>
-     <p><strong>דגש טכניקה:</strong> משפט קצר אחד.</p>
-     <p><strong>התקדמות עומס:</strong> משפט קצר אחד.</p>
+     <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
+     (חשב את המשקלים X,Y,Z אישית לפי משקל המתאמן ${weight} ק"ג ורמתו).
 
-  החזר אך ורק קוד HTML תקין בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" עם טיפים לתזונה והתאוששות. ללא הקדמות.`;
+  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" קצר עם טיפים. ללא טקסט חופשי או הקדמות.`;
 
+  console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
+  const t0 = Date.now();
   let planHtml = await tryGenerateContent(prompt);
+  console.log(`[TRY_GENERATE_CONTENT_DONE] took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
+
   if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    console.error(`[PLAN_VALIDATION_FAILED] htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
     throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
@@ -498,29 +503,9 @@ function computeProgressSignals(trainingLogs) {
   };
 }
 
-function sanitizeUserFacingText(text) {
-  let out = String(text ?? "");
-
-  out = out.replace(/\*\*/g, "");
-  out = out.replace(/`/g, "");
-  out = out.replace(/_{1,3}([^_]+)_{1,3}/g, "$1");
-
-  out = out.replace(/training-log\.html/gi, "דף \"לוג אימונים\"");
-  out = out.replace(/dashboard\.html/gi, "דף הדשבורד");
-  out = out.replace(/dynamodb/gi, "מאגר הנתונים");
-  out = out.replace(/DataType/gi, "");
-  out = out.replace(/\bLog_\d{4}-\d{2}-\d{2}\b/g, "לוג אימון");
-  out = out.replace(/\bLog_\b/g, "לוג אימון");
-
-  out = out.replace(/^\*\s+/gm, "- ");
-
-  return out.trim();
-}
-
-
-const DEEPSEEK_MODEL = "google/gemini-2.5-flash";
-const API_TIMEOUT_MS = 22000; // 22-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 2500;
+const DEEPSEEK_MODEL = "deepseek/deepseek-chat";
+const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
+const MAX_OUTPUT_TOKENS = 1200;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
@@ -561,6 +546,10 @@ async function tryGenerateContent(promptText) {
         messages: [{ role: "user", content: promptText }],
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: 0.7,
+        provider: {
+          order: ["DeepSeek", "Fireworks", "Together", "Novita", "Lepton"],
+          allow_fallbacks: true
+        },
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
       })
     });
