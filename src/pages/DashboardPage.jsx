@@ -162,6 +162,33 @@ function parseExercisesFromContent(rawContent) {
     };
   };
 
+  const parseStatsPart = (partStr, ex) => {
+    if (!partStr || !ex) return;
+    const parts = partStr.split(/\||;/);
+    parts.forEach(p => {
+      const trimmedP = p.trim();
+      if (trimmedP.includes('סטים')) {
+        const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/, '').trim();
+        if (val && !ex.statsBadges.some(b => b.label === 'סטים')) {
+          ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
+        }
+      } else if (trimmedP.includes('חזרות')) {
+        const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/, '').trim();
+        const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s\.\,]+|[\s\.\,]+$/g, '');
+        if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal) && !ex.statsBadges.some(b => b.label === 'חזרות')) {
+          ex.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
+        }
+      } else if (trimmedP.includes('מנוחה')) {
+        const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/, '').trim();
+        if (val && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
+          ex.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
+        }
+      } else if (trimmedP.length > 0) {
+        ex.extraDetails.push(trimmedP);
+      }
+    });
+  };
+
   lines.forEach(line => {
     const isHeader =
       line.includes('🏋️') || line.includes('🏋') ||
@@ -170,13 +197,24 @@ function parseExercisesFromContent(rawContent) {
       (!isDetailLine(line) && line.length <= 60); // short non-detail line = exercise title
 
     if (isHeader) {
-      const cleanTitle = line
+      let rawTitle = line
         .replace(/^🏋️?\s*/, '')
         .replace(/^\d+[\.\)\-:]\s*/, '')
         .replace(/^תרגיל\s*\d*\s*[:.\-]?\s*/i, '')
         .replace(/[\:\-\–\—]$/, '')
         .trim();
-      startExercise(cleanTitle || line);
+
+      let inlineStats = '';
+      if (rawTitle.includes('|')) {
+        const parts = rawTitle.split('|');
+        rawTitle = parts[0].trim();
+        inlineStats = parts.slice(1).join('|').trim();
+      }
+
+      startExercise(rawTitle || line);
+      if (inlineStats) {
+        parseStatsPart(inlineStats, currentEx);
+      }
       return;
     }
 
@@ -190,8 +228,6 @@ function parseExercisesFromContent(rawContent) {
       if (setWeights && setWeights.length > 0) {
         currentEx.setWeights = setWeights;
       } else {
-        // Dedicated weight line but no "סט X:" / no "ק"ג" unit → take every
-        // number as a per-set weight (e.g. "משקל מומלץ: 40, 42.5, 45").
         const nums = line.match(/\d+(?:[.,]\d+)?/g);
         if (nums && nums.length > 0) {
           currentEx.setWeights = nums.map(n => Number(n.replace(',', '.')));
@@ -213,29 +249,7 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (isStatsLine(line)) {
-      const parts = line.split(/\||;/);
-      parts.forEach(p => {
-        const trimmedP = p.trim();
-        if (trimmedP.includes('סטים')) {
-          const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/, '').trim();
-          if (val && !currentEx.statsBadges.some(b => b.label === 'סטים')) {
-            currentEx.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
-          }
-        } else if (trimmedP.includes('חזרות')) {
-          const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/, '').trim();
-          const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s\.\,]+|[\s\.\,]+$/g, '');
-          if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal) && !currentEx.statsBadges.some(b => b.label === 'חזרות')) {
-            currentEx.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
-          }
-        } else if (trimmedP.includes('מנוחה')) {
-          const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/, '').trim();
-          if (val && !currentEx.statsBadges.some(b => b.label === 'מנוחה')) {
-            currentEx.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
-          }
-        } else if (trimmedP.length > 0) {
-          currentEx.extraDetails.push(trimmedP);
-        }
-      });
+      parseStatsPart(line, currentEx);
       return;
     }
 
