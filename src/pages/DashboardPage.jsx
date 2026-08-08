@@ -122,15 +122,22 @@ function parseSetWeightsFromLine(line) {
 function parseExercisesFromContent(rawContent) {
   if (!rawContent) return [];
 
-  const tagBreakRegex = /<\/p>|<br\s*\/?>|<\/h[1-6]>|<\/li>|<\/div>/gi;
-  const stripTagRegex = /<[^>]*>/g;
+  // Strip all HTML tags cleanly while replacing block closing tags with linebreaks
+  const cleanedText = String(rawContent)
+    .replace(/<\/(?:p|h[1-6]|li|div)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ');
 
-  const lines = rawContent
-    .replace(tagBreakRegex, '\n')
-    .replace(stripTagRegex, ' ')
+  const lines = cleanedText
     .split('\n')
     .map(l => l.replace(/\*+/g, '').replace(/#+/g, '').trim())
-    .filter(l => l.length > 0);
+    .filter(l => {
+      if (!l || l.length === 0) return false;
+      // Filter out residual HTML tag snippets (e.g. "strong>", "<strong", "p>", etc.)
+      const lower = l.toLowerCase();
+      if (/^(?:strong>|<strong|p>|<p|\/p>|div>|<div|span>|<span|br>|hr>)$/.test(lower)) return false;
+      return true;
+    });
 
   const isStatsLine = (line) =>
     (line.includes('סטים') || line.includes('חזרות') || line.includes('מנוחה')) &&
@@ -144,15 +151,27 @@ function parseExercisesFromContent(rawContent) {
     isWeightLine(line) || isTechLine(line) || isProgLine(line) || isStatsLine(line);
 
   const broadExerciseKeyword =
-    /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|מקבילים|פרפר|היפ|תלת|דו\s*-?\s*ראשי|בייספס|טרייספס|כתפיי?ם|יד\s*(אחורית|קדמית)|רגליי?ם|שוקיי?ם|חזה|גב|זרוע|בטן|פלאנק|תרגיל|אופניים)/i;
+    /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|מקבילים|פרפר|היפ|תלת|דו\s*-?\s*ראשי|בייספס|טרייספס|כתפיי?ם|יד\s*(אחורית|קדמית)|רגליי?ם|שוקיי?ם|חזה|גב|זרוע|בטן|פלאנק|תרגיל|אופניים|פולי|כבלים|משקולות)/i;
 
   const exercises = [];
   let currentEx = null;
 
   const startExercise = (title) => {
+    let cleanTitle = (title || '(תרגיל)')
+      .replace(/^🏋️?\s*/, '')
+      .replace(/^\d+[\.\)\-:]\s*/, '')
+      .replace(/^תרגיל\s*\d*\s*[:.\-]?\s*/i, '')
+      .replace(/^strong>\s*/i, '')
+      .replace(/[\:\-\–\—]$/, '')
+      .trim();
+
+    if (!cleanTitle || cleanTitle.toLowerCase() === 'strong' || cleanTitle.toLowerCase() === 'strong>') {
+      cleanTitle = '(תרגיל)';
+    }
+
     if (currentEx) exercises.push(currentEx);
     currentEx = {
-      title: (title || '(תרגיל)').trim(),
+      title: cleanTitle,
       statsBadges: [],
       technique: '',
       progression: '',
@@ -161,54 +180,60 @@ function parseExercisesFromContent(rawContent) {
     };
   };
 
-  const parseStatsPart = (partStr, ex) => {
-    if (!partStr || !ex) return;
-    const parts = partStr.split(/\||;/);
+  const parseStatsPart = (line, ex) => {
+    if (!line || !ex) return;
+
+    // 1. Direct Regex Extraction for Sets, Reps, and Rest
+    const sMatch = line.match(/(?:סטים|סטים\s*וחזרות)\s*[:\-–—]?\s*(\d+(?:\s*סטים)?)/i);
+    if (sMatch && !ex.statsBadges.some(b => b.label === 'סטים')) {
+      ex.statsBadges.push({ label: 'סטים', val: sMatch[1].trim(), type: 'cyan' });
+    }
+
+    const rMatch = line.match(/חזרות\s*[:\-–—]?\s*([\d\-\–—\s]+(?:חזרות)?)/i);
+    if (rMatch && !ex.statsBadges.some(b => b.label === 'חזרות')) {
+      const cleanReps = rMatch[1].trim();
+      if (cleanReps && !['נקיות', '.', 'נקיות.'].includes(cleanReps)) {
+        ex.statsBadges.push({ label: 'חזרות', val: cleanReps, type: 'emerald' });
+      }
+    }
+
+    const mMatch = line.match(/מנוחה\s*[:\-–—]?\s*([\d\-\–—\s\w]+(?:שניות|דקות|sec|min)?)/i);
+    if (mMatch && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
+      ex.statsBadges.push({ label: 'מנוחה', val: mMatch[1].trim(), type: 'purple' });
+    }
+
+    // 2. Fallback Split Parsing if separated by | or ;
+    const parts = line.split(/\||;/);
     parts.forEach(p => {
       const trimmedP = p.trim();
       if (!trimmedP) return;
 
-      if (trimmedP.includes('סטים')) {
+      if (trimmedP.includes('סטים') && !ex.statsBadges.some(b => b.label === 'סטים')) {
         const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/i, '').trim();
-        if (val && !ex.statsBadges.some(b => b.label === 'סטים')) {
-          ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
-        }
-      } else if (trimmedP.includes('חזרות')) {
+        if (val) ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
+      } else if (trimmedP.includes('חזרות') && !ex.statsBadges.some(b => b.label === 'חזרות')) {
         const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/i, '').trim();
         const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s\.\,]+|[\s\.\,]+$/g, '');
-        if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal) && !ex.statsBadges.some(b => b.label === 'חזרות')) {
+        if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal)) {
           ex.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
         }
-      } else if (trimmedP.includes('מנוחה')) {
+      } else if (trimmedP.includes('מנוחה') && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
         const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/i, '').trim();
-        if (val && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
-          ex.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
-        }
-      } else if (trimmedP.includes('דקות') || trimmedP.includes('זמן') || trimmedP.includes('שניות')) {
-        if (!ex.statsBadges.some(b => b.label === 'זמן')) {
-          ex.statsBadges.push({ label: 'זמן', val: trimmedP, type: 'purple' });
-        }
-      } else {
-        ex.extraDetails.push(trimmedP);
+        if (val) ex.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
       }
     });
   };
 
   lines.forEach(line => {
+    // Explicit Exercise Header Criteria:
     const isHeader =
       line.includes('🏋️') || line.includes('🏋') ||
       /^\d+[\.\)\-:]\s*/.test(line) ||
-      (!isDetailLine(line) && broadExerciseKeyword.test(line)) ||
-      (!isDetailLine(line) && line.length <= 60);
+      /^תרגיל\s*\d*/i.test(line) ||
+      (!isDetailLine(line) && broadExerciseKeyword.test(line) && line.length <= 80);
 
     if (isHeader) {
-      let rawTitle = line
-        .replace(/^🏋️?\s*/, '')
-        .replace(/^\d+[\.\)\-:]\s*/, '')
-        .replace(/^תרגיל\s*\d*\s*[:.\-]?\s*/i, '')
-        .replace(/[\:\-\–\—]$/, '')
-        .trim();
-
+      let rawTitle = line;
       let inlineStats = '';
       if (rawTitle.includes('|')) {
         const parts = rawTitle.split('|');
@@ -216,7 +241,7 @@ function parseExercisesFromContent(rawContent) {
         inlineStats = parts.slice(1).join('|').trim();
       }
 
-      startExercise(rawTitle || line);
+      startExercise(rawTitle);
       if (inlineStats) {
         parseStatsPart(inlineStats, currentEx);
       }
@@ -224,7 +249,9 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (!currentEx) {
-      startExercise(line);
+      if (!isDetailLine(line) && line.length > 2) {
+        startExercise(line);
+      }
       return;
     }
 
@@ -262,7 +289,7 @@ function parseExercisesFromContent(rawContent) {
   });
 
   if (currentEx) exercises.push(currentEx);
-  return exercises;
+  return exercises.filter(ex => ex.title && ex.title !== 'strong>' && ex.title !== '<strong' && ex.title !== 'strong');
 }
 
 function PlanExerciseItem({ ex }) {
