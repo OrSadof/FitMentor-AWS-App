@@ -28,7 +28,7 @@ async function test6DaysFull() {
   let planHtml = null;
   const pollStart = Date.now();
 
-  while (Date.now() - pollStart < 100000) {
+  while (Date.now() - pollStart < 180000) {
     await new Promise(r => setTimeout(r, 5000));
     const elapsedSec = Math.round((Date.now() - start) / 1000);
     try {

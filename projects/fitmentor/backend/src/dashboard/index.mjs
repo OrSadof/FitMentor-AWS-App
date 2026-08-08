@@ -213,31 +213,112 @@ async function handleGeneratePlan(userId, payload) {
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `אתה מאמן כושר בכיר. חובתך לבנות תוכנית אימון שבועית מקיפה, מפורטת ומותאמת אישית של בדיוק ${reqDays} ימים נפרדים.
-  פרטי המתאמן: גיל ${age}, ${gender === 'male' ? 'זכר' : 'נקבה'}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר: ${fitnessLevel}, מטרה: ${goal}, ציוד זמין: ${equipment}.
+  // Build equipment description in Hebrew
+  const equipmentMap = {
+    'gym': 'חדר כושר מלא (מכונות, משקולות חופשיות, מוטות, כבלים)',
+    'home_dumbbells': 'משקולות יד בבית (דמבלים)',
+    'bodyweight': 'משקל גוף בלבד (ללא ציוד)'
+  };
+  const equipmentDesc = equipmentMap[equipment] || equipment;
 
-  כללים נחרצים (חובה!):
-  1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת h3 במבנה:
-     ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: שם אימון</h3>`).join('\n     ')}
-  2. לכל יום אימון צור 3 תרגילים מפורטים, מקצועיים ומלאים.
-  3. לכל תרגיל רשום בפורמט ה-HTML הבא:
-     <p>🏋️ <strong>שם התרגיל (שם באנגלית)</strong></p>
-     <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 10-12 חזרות | <strong>מנוחה:</strong> 60-90 שניות מנוחה בין סטים</p>
-     <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
-     <p><strong>איך מבצעים ודגשי טכניקה:</strong> הסבר מפורט על אופן ביצוע התרגיל והסטים, מנח גוף ונשימה נכונה.</p>
-     <p><strong>התקדמות עומס והסבר:</strong> הסבר מדוע נבחרו המשקלים הללו ואיך להעלות עומס באימונים הבאים.</p>
-     (חשב את המשקלים X,Y,Z 100% אישית לפי משקל המתאמן ${weight} ק"ג ורמתו. לתרגילי אירובי/משקל גוף רשום משקל גוף או זמן).
+  // Build fitness level description
+  const fitnessMap = {
+    'beginner': 'מתחיל (0-6 חודשי ניסיון)',
+    'intermediate': 'מתקדם (6 חודשים עד שנתיים)',
+    'advanced': 'מקצועי (מעל שנתיים ניסיון)'
+  };
+  const fitnessDesc = fitnessMap[fitnessLevel] || fitnessLevel;
 
-  החזר קוד HTML בלבד בתוך div class="ai-plan-result". בסוף כלול div class="plan-tips" מפורט עם טיפים לתזונה והתאוששות. ללא הקדמות.`;
+  // Build goal-specific coaching guidance
+  const goalGuidance = {
+    'חיטוב וירידה במשקל': 'עדיפות לתרגילים מורכבים (compound) ששורפים קלוריות רבות, סופרסטים, דגש על טמפו מהיר ומנוחות קצרות (30-60 שניות). שלב אלמנטים אירוביים כמו בורפיז, קפיצות או ריצה.',
+    'עלייה במסת שריר': 'דגש על היפרטרופיה: 3-4 סטים של 8-12 חזרות, מנוחות של 60-90 שניות, עומסים מתונים-כבדים. שלב תרגילים מבודדים לצד מורכבים. TUT (Time Under Tension) של 40-60 שניות לסט.',
+    'שיפור כושר כללי': 'שילוב מגוון: כוח, סיבולת לב-ריאה, גמישות. תרגילים פונקציונליים, מעגלי אימון (circuits), אירובי בעצימות משתנה (HIIT). מנוחות של 30-60 שניות.',
+    'אימוני כוח': 'עדיפות לתרגילי כוח בסיסיים: סקוואט, דדליפט, לחיצת חזה, לחיצת כתפיים. 4-5 סטים של 3-6 חזרות בעומס כבד. מנוחות ארוכות (2-4 דקות). דגש על פרוגרסיה לינארית.'
+  };
+  const goalCoaching = goalGuidance[goal] || '';
+
+  const prompt = `אתה מאמן כושר מקצועי בכיר עם 15+ שנות ניסיון. עליך לבנות תוכנית אימון שבועית מדויקת, מקיפה, מפורטת ומותאמת אישית.
+
+══════════════════════════════════════
+📋 פרטי המתאמן:
+• גיל: ${age}
+• מין: ${gender === 'male' ? 'זכר' : 'נקבה'}
+• משקל: ${weight} ק"ג
+• גובה: ${height} ס"מ
+• רמת כושר: ${fitnessDesc}
+• מטרה: ${goal}
+• ציוד זמין: ${equipmentDesc}
+══════════════════════════════════════
+
+🎯 הנחיות מטרה: ${goalCoaching}
+
+${historyContext ? `📊 היסטוריית תוכניות קודמות של המתאמן:\n${historyContext}\nבנה תוכנית שונה ומשתנה מהתוכניות הקודמות כדי להבטיח גיוון ושיפור מתמיד.\n` : ''}
+══════════════════════════════════════
+⚠️ כללים מחייבים (חובה לעמוד ב-100% מהם!):
+══════════════════════════════════════
+
+1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> ייחודית:
+${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
+   חלק את קבוצות השרירים בצורה אופטימלית על פני ${reqDays} ימים כדי לאפשר התאוששות מלאה.
+
+2. לכל יום אימון צור בדיוק 3-4 תרגילים אופטימליים, שנבחרו ספציפית עבור המתאמן הזה.
+   בחר תרגילים שמתאימים ל: רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרת ${goal}.
+
+3. לכל תרגיל רשום בפורמט ה-HTML המדויק הבא (חובה!):
+   <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
+   <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
+   <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
+   <p><strong>איך מבצעים ודגשי טכניקה:</strong> [הסבר מפורט ומקצועי: מנח גוף התחלתי, טווח תנועה, נשימה, שרירים מעורבים, טעויות נפוצות להימנע מהן]</p>
+   <p><strong>התקדמות עומס והסבר:</strong> [הסבר מדוע נבחרו המשקלים A,B,C עבור מתאמן במשקל ${weight} ק"ג ברמת ${fitnessDesc}, ואיך להעלות עומס בהדרגה]</p>
+
+4. 🔢 חישוב המשקלים חייב להיות 100% אישי ומותאם:
+   • חשב לפי: משקל גוף ${weight} ק"ג, מין ${gender === 'male' ? 'זכר' : 'נקבה'}, גיל ${age}, רמת ${fitnessDesc}.
+   • לתרגילי משקולות: ערכי ק"ג ריאליסטיים ומדויקים לכל סט (לדוגמה: סט חימום קל → סט עבודה → סט עבודה כבד).
+   • לתרגילי משקל גוף: רשום "משקל גוף" ומספר חזרות מותאם.
+   • לתרגילי אירובי: רשום זמן ועצימות (למשל "5 דקות בעצימות בינונית-גבוהה").
+
+5. בסוף התוכנית כלול <div class="plan-tips"> עם:
+   • 3-4 טיפי תזונה מותאמים למטרת ${goal}
+   • 2-3 טיפי התאוששות ומנוחה
+   • המלצה לשתייה ושינה
+
+══════════════════════════════════════
+📌 פורמט פלט: החזר HTML בלבד, ללא markdown, ללא הקדמות, ללא הסברים מחוץ ל-HTML.
+עטוף הכל ב-<div class="ai-plan-result">.
+ודא שיש בדיוק ${reqDays} תגיות <h3> עם ימי אימון!
+══════════════════════════════════════`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const t0 = Date.now();
-  let planHtml = await tryGenerateContent(prompt);
-  console.log(`[TRY_GENERATE_CONTENT_DONE] took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
+  
+  // Retry up to 2 attempts to get a complete plan with all requested days
+  const MAX_ATTEMPTS = 2;
+  let planHtml = null;
+  let lastErr = null;
 
-  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    console.error(`[PLAN_VALIDATION_FAILED] htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
-    throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const t0 = Date.now();
+    try {
+      planHtml = await tryGenerateContent(prompt);
+      console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
+
+      if (isLikelyRealPlanHtml(planHtml, reqDays)) {
+        console.log(`[PLAN_VALIDATION_OK] attempt=${attempt}, reqDays=${reqDays}`);
+        break;
+      } else {
+        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
+        planHtml = null;
+        lastErr = `ה-AI החזיר תוכנית חלקית (חסרים ימי אימון). ניסיון ${attempt}/${MAX_ATTEMPTS}.`;
+      }
+    } catch (err) {
+      console.error(`[GENERATE_PLAN_ERROR] attempt=${attempt}:`, err);
+      planHtml = null;
+      lastErr = err.message || 'שגיאה לא ידועה';
+    }
+  }
+
+  if (!planHtml) {
+    throw new Error(lastErr || `ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");
@@ -599,7 +680,7 @@ async function tryGenerateContent(promptText) {
 
     const isTimeout = err.name === "AbortError";
     const errorMsg = isTimeout 
-      ? "בקשת ה-AI הופסקה עקב חריגה מזמן ההמתנה (Timeout של 20 שניות)."
+      ? "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר"
       : `שגיאה בתקשורת מול model deepseek/deepseek-v4-flash-0731: ${err.message || 'השרת לא הגיב'}`;
 
     if (isJsonChat) {

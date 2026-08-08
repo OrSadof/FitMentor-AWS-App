@@ -1297,7 +1297,7 @@ export function DashboardPage({ user }) {
         console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
         const pollStartTime = Date.now();
 
-        while (Date.now() - pollStartTime < 100000) {
+        while (Date.now() - pollStartTime < 180000) {
           await new Promise(r => setTimeout(r, 3500));
           try {
             const checkRes = await fitmentorApi.getPlan(effectiveEmail);
