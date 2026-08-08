@@ -289,11 +289,13 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
    <p><strong>איך מבצעים ודגשי טכניקה:</strong> [הסבר מפורט ומקצועי: מנח גוף התחלתי, טווח תנועה, נשימה, שרירים מעורבים, טעויות נפוצות להימנע מהן]</p>
    <p><strong>התקדמות עומס והסבר:</strong> [הסבר מדוע נבחרו המשקלים A,B,C עבור מתאמן במשקל ${weight} ק"ג ברמת ${fitnessDesc}, ואיך להעלות עומס בהדרגה]</p>
 
-4. 🔢 חישוב המשקלים חייב להיות 100% אישי ומותאם:
-   • חשב לפי: משקל גוף ${weight} ק"ג, מין ${gender === 'male' ? 'זכר' : 'נקבה'}, גיל ${age}, רמת ${fitnessDesc}.
-   • לתרגילי משקולות: ערכי ק"ג ריאליסטיים ומדויקים לכל סט (לדוגמה: סט חימום קל → סט עבודה → סט עבודה כבד).
-   • לתרגילי משקל גוף: רשום "משקל גוף" ומספר חזרות מותאם.
-   • לתרגילי אירובי: רשום זמן ועצימות (למשל "5 דקות בעצימות בינונית-גבוהה").
+4. 🔢 חישוב המשקלים חייב להיות 100% אישי, מקצועי ומדורג בהגיון רב:
+   • חוק זהב מחייב למשקלים: המשקל חייב לעלות בהדרגה מסט לסט או להישאר זהה (לדוגמה: סט 1: 15 ק"ג | סט 2: 17.5 ק"ג | סט 3: 20 ק"ג, או 15-15-15 ק"ג).
+   • חל איסור מוחלט לרדת במשקל בסטים מתקדמים (כמו 15, 20 ואז 5)! זה בלתי הגיוני ומעיד על שגיאה.
+   • התאם את ערכי הקילו לסוג התרגיל:
+     - תרגילים מורכבים (סקוואט, דדליפט, לחיצת חזה): משקלים כבדים בהתאם למשקל גוף המתאמן (${weight} ק"ג) ולרמת הכושר (${fitnessDesc}).
+     - תרגילים מבודדים ופולי (פולי עליון, תלת-ראשי, כפילת מרפקים, הרחקת כתפיים): משקלים קלים-בינוניים הגיוניים לשרירים מבודדים.
+     - תרגילי משקל גוף / אירובי: רשום "משקל גוף" או זמן ועצימות.
 
 5. בסוף התוכנית כלול <div class="plan-tips"> עם:
    • 3-4 טיפי תזונה מותאמים למטרת ${goal}
@@ -645,7 +647,7 @@ async function tryGenerateContent(promptText) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: "system", content: "You are an expert fitness AI mentor. Return complete, rich, detailed HTML for the workout plan." },
+          { role: "system", content: "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, progressive (Set 1 <= Set 2 <= Set 3), and anatomically sound for the user's age, weight, and fitness level. Never produce chaotic, decreasing, or illogical weights across sets (e.g. NEVER output 15kg, 20kg, then 5kg). Return complete, rich, detailed HTML for the workout plan." },
           { role: "user", content: promptText }
         ],
         max_tokens: MAX_OUTPUT_TOKENS,

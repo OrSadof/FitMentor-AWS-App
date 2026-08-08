@@ -6,9 +6,12 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCom
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
-const GOOGLE_API_KEY1 = process.env.GOOGLE_API_KEY1;
-const GOOGLE_API_KEY2 = process.env.GOOGLE_API_KEY2;
-const GOOGLE_API_KEY3 = process.env.GOOGLE_API_KEY3;
+
+const GOOGLE_API_KEYS = [
+  process.env.GOOGLE_API_KEY1,
+  process.env.GOOGLE_API_KEY2,
+  process.env.GOOGLE_API_KEY3
+].map(k => k?.trim()).filter(Boolean);
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -19,17 +22,13 @@ const METRICS_TOTAL_KEY = "TOTAL";
 async function incrementMetric(field, by = 1) {
   const safeBy = Number(by) || 0;
   if (!field || safeBy === 0) return;
-  try {
-    await docClient.send(new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY },
-      UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
-      ExpressionAttributeNames: { "#f": String(field) },
-      ExpressionAttributeValues: { ":zero": 0, ":inc": safeBy, ":now": new Date().toISOString() }
-    }));
-  } catch (e) {
-    console.error("Increment metric error:", e);
-  }
+  await docClient.send(new UpdateCommand({
+    TableName: TABLE_NAME,
+    Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY },
+    UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
+    ExpressionAttributeNames: { "#f": String(field) },
+    ExpressionAttributeValues: { ":zero": 0, ":inc": safeBy, ":now": new Date().toISOString() }
+  }));
 }
 
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
@@ -50,29 +49,29 @@ function countDayHeadings(planHtml) {
 }
 
 function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
-  const s = String(planHtml || "").trim();
+  let s = String(planHtml || "").replace(/```(?:html)?/gi, '').replace(/```/g, '').trim();
   if (!s) return false;
   if (s.startsWith("{") && (s.includes('"reply"') || s.includes('"updatedPlanHtml"') || s.includes('"uiAction"'))) {
     return false;
   }
   if (!s.includes("<") || !s.includes(">")) return false;
-  if (!/class\s*=\s*["']ai-plan-result["']/i.test(s)) return false;
-
+  if (!/class\s*=\s*["']ai-plan-result["']/i.test(s) && !s.includes("<h3") && !s.includes("<h2")) return false;
   const lower = s.toLowerCase();
-  if (lower.includes("failed") || lower.includes("error") || lower.includes("לא הצלחתי")) {
+  if (lower.includes("לא הצלחתי לייצר תוכנית") || lower.includes("לא הצלחתי לטעון תוכנית") || lower.includes("בעיה בתקשורת") || lower.includes("נסה שוב")) {
     return false;
   }
   const realDays = countDayHeadings(s);
   if (realDays < expectedDays) {
     return false;
   }
+
   return true;
 }
 
 export const handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
   };
 
@@ -125,8 +124,9 @@ export const handler = async (event) => {
         break;
       case "savePlan":
         if (!payload?.planHtml || !isLikelyRealPlanHtml(payload.planHtml)) {
-          return { statusCode: 400, headers, body: JSON.stringify({ message: "Invalid planHtml" }) };
+          return { statusCode: 400, headers, body: JSON.stringify({ message: "Invalid planHtml (not saving)" }) };
         }
+
         await saveToDb(normalizedUserId, "Plan", { ...payload, updatedAt: new Date().toISOString() });
         await appendPlanHistorySnapshot(normalizedUserId, payload.planHtml, payload.params || null);
         result = { message: "Saved" };
@@ -136,6 +136,7 @@ export const handler = async (event) => {
         await deleteFromDb(normalizedUserId, "ChatHistory");
         result = { message: "Plan & Chat deleted" };
         break;
+
       case "chat":
         try { await incrementMetric("aiCallsTotal", 1); } catch {}
         result = await handleChat(normalizedUserId, payload);
@@ -150,14 +151,12 @@ export const handler = async (event) => {
       case "getTrainingLogs":
         result = await handleGetTrainingLogs(normalizedUserId);
         break;
-      case "getAiInsights":
-        try { await incrementMetric("aiCallsTotal", 1); } catch {}
-        result = await handleGetAiInsights(normalizedUserId, payload);
-        break;
-      case "getAchievements":
-        try { await incrementMetric("aiCallsTotal", 1); } catch {}
-        result = await handleGetAchievements(normalizedUserId, payload);
-        break;
+
+	  case "getAiInsights":
+    try { await incrementMetric("aiCallsTotal", 1); } catch {}
+		result = await handleGetAiInsights(normalizedUserId, payload);
+		break;
+
       default:
         return { statusCode: 400, headers, body: JSON.stringify({ message: `Invalid action: ${action}` }) };
     }
@@ -165,7 +164,6 @@ export const handler = async (event) => {
     return { statusCode: 200, headers, body: JSON.stringify(result) };
 
   } catch (error) {
-    console.error("Handler Error:", error);
     return { statusCode: 500, headers, body: JSON.stringify({ message: error.message || "Internal Server Error" }) };
   }
 };
@@ -208,6 +206,7 @@ async function handleGetTrainingLogs(userId) {
     const logs = (result.Items || []).map((item) => {
       const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
       const data = Data ?? rest;
+
       return {
         date: String(DataType || "").replace("TrainingLog_", ""),
         data
@@ -215,59 +214,112 @@ async function handleGetTrainingLogs(userId) {
     });
 
     logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
     return { logs, error: null };
   } catch (error) {
-    console.error("Error fetching training logs:", error);
-    return { logs: [], error: error.message };
+    const name = error?.name ? String(error.name) : "Error";
+    const message = error?.message ? String(error.message) : "Unknown error";
+    return { logs: [], error: `${name}: ${message}` };
   }
 }
 
 async function handleGeneratePlan(userId, payload) {
   const { age, goal, days, equipment, weight, height, gender, fitnessLevel } = payload;
   const reqDays = Math.max(1, parseInt(days, 10) || 3);
+
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
-  const prompt = `You are a professional fitness mentor. Your goal: Build a customized weekly fitness plan.
-User info:
-- Age: ${age}
-- Gender: ${gender}
-- Weight: ${weight} kg
-- Height: ${height} cm
-- Fitness level: ${fitnessLevel}
-- Goal: ${goal}
-- Workout days/week REQUIRED (MUST build exactly ${reqDays} days!): ${reqDays} days
-- Available equipment: ${equipment}
+  // Build equipment description in Hebrew
+  const equipmentMap = {
+    'gym': 'חדר כושר מלא (מכונות, משקולות חופשיות, מוטות, כבלים)',
+    'home_dumbbells': 'משקולות יד בבית (דמבלים)',
+    'bodyweight': 'משקל גוף בלבד (ללא ציוד)'
+  };
+  const equipmentDesc = equipmentMap[equipment] || equipment;
 
-Previous plans summary:
-${historyContext}
+  // Build fitness level description
+  const fitnessMap = {
+    'beginner': 'מתחיל (0-6 חודשי ניסיון)',
+    'intermediate': 'מתקדם (6 חודשים עד שנתיים)',
+    'advanced': 'מקצועי (מעל שנתיים ניסיון)'
+  };
+  const fitnessDesc = fitnessMap[fitnessLevel] || fitnessLevel;
 
-Instructions:
-1. Return valid, clean HTML wrapped in <div class="ai-plan-result">.
-2. Build EXACTLY ${reqDays} distinct workout days, using <h3> headers for each day (e.g. <h3>Day 1: Push</h3>, <h3>Day 2: Pull</h3>... up to <h3>Day ${reqDays}: ...</h3>).
-3. Exercise count per day: For 2-3 days split, include 4-5 exercises/day. For 4-6 days split, include exactly 3 focused exercises per day with 1 short sentence for technique & progression overload so all ${reqDays} days generate ultra-fast without hitting timeouts.
-4. Include a <div class="plan-tips"> section with nutrition and recovery advice.
-5. Do not include markdown formatting, markdown backticks, or intro/outro text.
+  // Build goal-specific coaching guidance
+  const goalGuidance = {
+    'חיטוב וירידה במשקל': 'עדיפות לתרגילים מורכבים (compound) ששורפים קלוריות רבות, סופרסטים, דגש על טמפו מהיר ומנוחות קצרות (30-60 שניות). שלב אלמנטים אירוביים כמו בורפיז, קפיצות או ריצה.',
+    'עלייה במסת שריר': 'דגש על היפרטרופיה: 3-4 סטים של 8-12 חזרות, מנוחות של 60-90 שניות, עומסים מתונים-כבדים. שלב תרגילים מבודדים לצד מורכבים. TUT (Time Under Tension) של 40-60 שניות לסט.',
+    'שיפור כושר כללי': 'שילוב מגוון: כוח, סיבולת לב-ריאה, גמישות. תרגילים פונקציונליים, מעגלי אימון (circuits), אירובי בעצימות משתנה (HIIT). מנוחות של 30-60 שניות.',
+    'אימוני כוח': 'עדיפות לתרגילי כוח בסיסיים: סקוואט, דדליפט, לחיצת חזה, לחיצת כתפיים. 4-5 סטים של 3-6 חזרות בעומס כבד. מנוחות ארוכות (2-4 דקות). דגש על פרוגרסיה לינארית.'
+  };
+  const goalCoaching = goalGuidance[goal] || '';
 
-WEIGHTS (critical):
-- For EVERY weightlifting exercise, prescribe the EXACT weight in kg (ק"ג) to use for EACH set, as a separate line in the exercise HTML exactly like this:
-  <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 45 ק"ג | סט 3: 50 ק"ג</p>
-- DECIDE the weights yourself, based on the user's full profile (age, gender, body weight, height, fitness level, goal, experience) and the exercise type (compound vs. isolation, upper vs. lower body).
-- The weight MUST DIFFER per set, with a natural progression: set 1 is a lighter warm-up/feeler set, and later sets are heavier (the working sets). Do NOT repeat the same weight for every set.
-- Use realistic barbell/dumbbell increments (2.5 kg or 5 kg steps). Weights must be sensible for the user's level (beginner → lighter, advanced → heavier) and should get progressively heavier across the working sets as they progress week to week.
-- For BODYWEIGHT-only exercises (plank, crunches, push-ups, pull-ups, hanging knee raises, core), skip the "משקל מומלץ" line (or write "משקל גוף").`;
+  const prompt = `אתה מאמן כושר מקצועי בכיר עם 15+ שנות ניסיון. עליך לבנות תוכנית אימון שבועית מדויקת, מקיפה, מפורטת ומותאמת אישית.
 
-  let planHtml = await tryGenerateContent(prompt);
+══════════════════════════════════════
+📋 פרטי המתאמן:
+• גיל: ${age}
+• מין: ${gender === 'male' ? 'זכר' : 'נקבה'}
+• משקל: ${weight} ק"ג
+• גובה: ${height} ס"מ
+• רמת כושר: ${fitnessDesc}
+• מטרה: ${goal}
+• ציוד זמין: ${equipmentDesc}
+══════════════════════════════════════
+
+🎯 הנחיות מטרה: ${goalCoaching}
+
+${historyContext ? `📊 היסטוריית תוכניות קודמות של המתאמן:\n${historyContext}\nבנה תוכנית שונה ומשתנה מהתוכניות הקודמות כדי להבטיח גיוון ושיפור מתמיד.\n` : ''}
+══════════════════════════════════════
+⚠️ כללים מחייבים (חובה לעמוד ב-100% מהם!):
+══════════════════════════════════════
+
+1. צור בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> ייחודית:
+${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
+   חלק את קבוצות השרירים בצורה אופטימלית על פני ${reqDays} ימים כדי לאפשר התאוששות מלאה.
+
+2. לכל יום אימון צור בדיוק 3-4 תרגילים אופטימליים, שנבחרו ספציפית עבור המתאמן הזה.
+   בחר תרגילים שמתאימים ל: רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרת ${goal}.
+
+3. לכל תרגיל רשום בפורמט ה-HTML המדויק הבא (חובה!):
+   <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
+   <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
+   <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
+   <p><strong>איך מבצעים ודגשי טכניקה:</strong> [הסבר מפורט ומקצועי: מנח גוף התחלתי, טווח תנועה, נשימה, שרירים מעורבים, טעויות נפוצות להימנע מהן]</p>
+   <p><strong>התקדמות עומס והסבר:</strong> [הסבר מדוע נבחרו המשקלים A,B,C עבור מתאמן במשקל ${weight} ק"ג ברמת ${fitnessDesc}, ואיך להעלות עומס בהדרגה]</p>
+
+4. 🔢 חישוב המשקלים חייב להיות 100% אישי, מקצועי ומדורג בהגיון רב:
+   • חוק זהב מחייב למשקלים: המשקל חייב לעלות בהדרגה מסט לסט או להישאר זהה (לדוגמה: סט 1: 15 ק"ג | סט 2: 17.5 ק"ג | סט 3: 20 ק"ג, או 15-15-15 ק"ג).
+   • חל איסור מוחלט לרדת במשקל בסטים מתקדמים (כמו 15, 20 ואז 5)! זה בלתי הגיוני ומעיד על שגיאה.
+   • התאם את ערכי הקילו לסוג התרגיל:
+     - תרגילים מורכבים (סקוואט, דדליפט, לחיצת חזה): משקלים כבדים בהתאם למשקל גוף המתאמן (${weight} ק"ג) ולרמת הכושר (${fitnessDesc}).
+     - תרגילים מבודדים ופולי (פולי עליון, תלת-ראשי, כפילת מרפקים, הרחקת כתפיים): משקלים קלים-בינוניים הגיוניים לשרירים מבודדים.
+     - תרגילי משקל גוף / אירובי: רשום "משקל גוף" או זמן ועצימות.
+
+5. בסוף התוכנית כלול <div class="plan-tips"> עם:
+   • 3-4 טיפי תזונה מותאמים למטרת ${goal}
+   • 2-3 טיפי התאוששות ומנוחה
+   • המלצה לשתייה ושינה
+
+══════════════════════════════════════
+📌 פורמט פלט: החזר HTML בלבד, ללא markdown, ללא הקדמות, ללא הסברים מחוץ ל-HTML.
+עטוף הכל ב-<div class="ai-plan-result">.
+ודא שיש בדיוק ${reqDays} תגיות <h3> עם ימי אימון!
+══════════════════════════════════════`;
+
+  console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
+  const t0 = Date.now();
+  const planHtml = await tryGenerateContent(prompt);
+  console.log(`[TRY_GENERATE_CONTENT_DONE] took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
+
   if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    console.warn(`Initial plan output failed validation (expected ${reqDays} days). Retrying...`);
-    planHtml = await tryGenerateContent(prompt + "\nCRITICAL: Do NOT stop mid-way. Complete all " + reqDays + " workout days fully.");
-  }
-
-  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    throw new Error(`AI failed to generate a complete plan for ${reqDays} days. Please try again.`);
+    console.error(`[PLAN_VALIDATION_FAILED] htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
+    throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");
+
   await saveToDb(userId, "Plan", { planHtml, params: payload, createdAt: new Date().toISOString() });
   await appendPlanHistorySnapshot(userId, planHtml, payload);
   return { plan: { planHtml } };
@@ -276,69 +328,136 @@ WEIGHTS (critical):
 function normalizeUserDisplayName(name) {
   const s = String(name || "").trim();
   if (!s) return "";
-  return s.replace(/[\u0000-\u001F\u007F]/g, "").slice(0, 40);
+  const cleaned = s.replace(/[\u0000-\u001F\u007F]/g, "").trim();
+  if (!cleaned) return "";
+  return cleaned.slice(0, 40);
 }
 
 async function handleChat(userId, { message, userName }) {
   const planData = await getFromDb(userId, "Plan");
   const chatData = await getFromDb(userId, "ChatHistory");
+
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
+
   const trainingLogsResult = await handleGetTrainingLogs(userId);
   const trainingLogs = trainingLogsResult.logs || [];
+
   const progress = computeProgressSignals(trainingLogs);
-  const planParamsContext = planData?.params ? JSON.stringify(planData.params) : "No saved plan parameters.";
+  const planParamsContext = planData?.params ? JSON.stringify(planData.params) : "אין פרטים שמורים.";
+
   const displayName = normalizeUserDisplayName(userName);
 
+  if (trainingLogsResult.error) {
+    return {
+      reply:
+        `אני לא מצליח לגשת ליומן האימונים ב-DynamoDB כרגע.\n` +
+        `שגיאה: ${trainingLogsResult.error}\n\n` +
+        `בדוק בבקשה את ההרשאות (DynamoDB Query) ואת מבנה הטבלה.`,
+      updatedPlanHtml: null
+    };
+  }
+
   let messages = chatData?.messages || [];
-  const currentPlanHtml = planData?.planHtml || "No current plan.";
-  let trainingLogsContext = "No training logs recorded yet.";
+  const currentPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
+
+  let trainingLogsContext = "אין לוגי אימונים עדיין.";
 
   if (trainingLogs.length > 0) {
-    trainingLogsContext = "Recent Training History:\n";
-    trainingLogs.slice(0, 10).forEach(log => {
-      trainingLogsContext += `\nWorkout Date: ${log.date}\n`;
-      if (Array.isArray(log.data.exercises)) {
+    const recentLogs = trainingLogs.slice(0, 10);
+
+    trainingLogsContext = "היסטוריית אימונים (מהחדש לישן):\n";
+
+    recentLogs.forEach(log => {
+      trainingLogsContext += `\n--- אימון בתאריך: ${log.date} ---\n`;
+
+      if (log.data.exercises && Array.isArray(log.data.exercises)) {
         log.data.exercises.slice(0, 8).forEach(exercise => {
-          trainingLogsContext += `Exercise: ${exercise.name}\n`;
-          if (Array.isArray(exercise.sets)) {
-            exercise.sets.forEach((s, i) => {
-              trainingLogsContext += `  Set ${i + 1}: ${s.weight || 'Bodyweight'}kg x ${s.reps || '?'} reps\n`;
-            });
+          trainingLogsContext += `תרגיל: ${exercise.name}\n`;
+
+          if (Array.isArray(exercise.sets) && exercise.sets.length > 0) {
+            const setsDetails = exercise.sets.slice(0, 8).map((s, i) => {
+              const weight = s.weight ? `${s.weight}kg` : 'משקל גוף';
+              const reps = s.reps ? `${s.reps} חזרות` : '? חזרות';
+              return `   סט ${i + 1}: ${weight} X ${reps}`;
+            }).join("\n");
+
+            trainingLogsContext += setsDetails + "\n";
+          } else {
+            trainingLogsContext += `   (אין פירוט סטים)\n`;
           }
         });
+      }
+
+      if (log.data.notes) {
+        trainingLogsContext += `הערות אימון: ${log.data.notes}\n`;
       }
     });
   }
 
-  const systemPrompt = `You are FitMentor AI, an expert virtual personal trainer and wellness mentor.
-User name: ${displayName || "User"}
-Tone: Friendly, motivating, professional.
-Format requirement: Return JSON only in this exact structure:
-{
-  "reply": "Your response text here",
-  "updatedPlanHtml": null or "Updated plan HTML if modifying plan",
-  "uiAction": null or "openNewPlanForm"
-}
+  const systemPrompt = `
+  אתה FitMentor AI, מאמן אישי חכם, שמכיר את הפיצ'רים של האתר FitMentor ומסביר למשתמש איך להשתמש בהם.
 
-Current Plan HTML:
-${currentPlanHtml}
+  שם המשתמש (אם קיים): ${displayName || "לא ידוע"}
 
-User Plan Profile:
-${planParamsContext}
+  כללי פנייה לפי שם (חשוב):
+  - אם יש שם משתמש, כשזו הודעה ראשונה בשיחה (אין היסטוריית צ'אט) פתח בברכה קצרה עם השם שלו.
+  - בהמשך השיחה, השתמש בשם מדי פעם בצורה טבעית (לא בכל הודעה).
+  - אם אין שם משתמש, אל תנחש שם ואל תמציא.
 
-Progress Summary:
-${progress.summary}
+  כללי שפה וסגנון (חשוב):
+  - כתוב למשתמש בעברית פשוטה וברורה.
+  - אל תשתמש ב-Markdown בכלל (בלי **, בלי *, בלי כותרות ###, בלי backticks).
+  - אל תזכיר שמות קבצים/סיומות או מונחים טכניים (כמו JSON/DynamoDB).
+  - השתמש ברשימות בצורה ידידותית: למשל "1) ..." או "- ...".
 
-Training Logs:
-${trainingLogsContext}
+  הקשר מוצר (Product Context):
+  - האתר כולל "לוג אימונים" (בתפריט הצד) לתיעוד משקלים וחזרות.
+  - האתר כולל "מעקב התקדמות" ו"המלצות חכמות".
+  - הנתונים נשמרים ומאפשרים לך לנתח שיפור בכוח/נפח.
 
-When you modify or regenerate the plan (updatedPlanHtml), every weightlifting exercise must include a "משקל מומלץ" line prescribing the exact kg to use for EACH set, e.g. <p><strong>משקל מומלץ:</strong> סט 1: 40 ק"ג | סט 2: 45 ק"ג | סט 3: 50 ק"ג</p>. Decide the weights yourself from the user's profile (age, gender, weight, height, fitness level, goal) and exercise type; the weight must differ per set (lighter first set, heavier working sets) using 2.5/5 kg plate increments. For bodyweight-only exercises, omit the line.`;
+  המצב הנוכחי:
+  1. תוכנית אימונים נוכחית (HTML מצורף למטה).
+  2. היסטוריית אימונים מפורטת (מצורפת למטה) - השתמש בה כדי לנתח התקדמות במשקלי עבודה!
+  3. בקשת המשתמש.
 
-  const recentHistory = messages.slice(-6).map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.text}`).join("\n");
-  const fullPrompt = `${systemPrompt}\n\nChat History:\n${recentHistory}\n\nUser: ${message}\nAI (JSON):`;
+  הוראות:
+  1. אם המשתמש שואל על התקדמות, הסתכל על המשקלים והחזרות בלוגים וציין מספרים מדויקים ("אני רואה שבשבוע שעבר עשית 60 קילו ועכשיו 65").
+  2. אם המשתמש מבקש לשנות את התוכנית, שכתב את ה-HTML בהתאם.
+  3. אם המשתמש מבקש "תוכנית חדשה":
+     - אם יש סימני התקדמות בלוגים, אל תרוץ ישר ליצור תוכנית חדשה: קודם שאל שאלה קצרה על המטרה שלו עכשיו (ולא רק "מה המטרה"—הצע 2–4 אפשרויות נפוצות).
+     - אם המשתמש מתעקש על "תוכנית חדשה לגמרי" או אומר שהתוכנית לא מתאימה/נבנתה בטעות: אל תייצר תוכנית בתוך הצ'אט.
+       במקום זה החזר uiAction = "openNewPlanForm" ובקש ממנו למלא מחדש את הטופס.
+     - אם אין מספיק לוגים/אין סימני התקדמות, שאל 1–2 שאלות קצרות כדי להבין למה הוא רוצה להחליף, והצע פתרון פשוט.
+  
+  פורמט תשובה חובה (JSON בלבד!):
+  {
+    "reply": "הטקסט שאתה עונה למשתמש",
+    "updatedPlanHtml": "ה-HTML המלא והמתוקן (או null אם אין שינוי)",
+    "uiAction": "openNewPlanForm" או null
+  }
+
+  התוכנית הנוכחית (HTML):
+  ${currentPlanHtml}
+
+  פרטי המתאמן כפי שמורים במערכת (כדי שלא תשאל שוב את אותם פרטים):
+  ${planParamsContext}
+
+  היסטוריית תוכניות קודמות (סיכום):
+  ${historyContext}
+
+  סיכום התקדמות אוטומטי (על בסיס הלוגים):
+  ${progress.summary}
+
+  היסטוריית אימונים (לוגים):
+  ${trainingLogsContext}
+  `;
+
+  const recentHistory = messages.slice(-6).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
+  const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
 
   const rawResponse = await tryGenerateContent(fullPrompt);
+
   let parsedResponse;
   try {
     const cleanJson = rawResponse.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -363,10 +482,42 @@ When you modify or regenerate the plan (updatedPlanHtml), every weightlifting ex
     };
   }
 
-  messages.push({ role: "user", text: message, timestamp: Date.now() });
-  messages.push({ role: "ai", text: parsedResponse.reply, timestamp: Date.now() });
+  const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
+  const aiMsgObj = { role: "ai", text: parsedResponse.reply, timestamp: Date.now() };
 
-  await saveToDb(userId, "ChatHistory", { messages });
+  let updatedSessions = Array.isArray(payload?.sessions) ? [...payload.sessions] : null;
+  if (updatedSessions && updatedSessions.length > 0) {
+    const activeId = payload.activeSessionId || updatedSessions[0].id;
+    const activeIdx = updatedSessions.findIndex(s => s.id === activeId);
+    const targetIdx = activeIdx >= 0 ? activeIdx : 0;
+    const targetSession = updatedSessions[targetIdx];
+
+    let sessionTitle = targetSession.title;
+    if (!sessionTitle || sessionTitle === 'שיחה חדשה' || !targetSession.messages || targetSession.messages.length === 0) {
+      sessionTitle = message.slice(0, 28) + (message.length > 28 ? '...' : '');
+    }
+
+    const updatedMessages = [...(targetSession.messages || []), userMsgObj, aiMsgObj];
+    updatedSessions[targetIdx] = {
+      ...targetSession,
+      title: sessionTitle,
+      updatedAt: Date.now(),
+      messages: updatedMessages
+    };
+
+    await saveToDb(userId, "ChatHistory", {
+      sessions: updatedSessions,
+      messages: updatedMessages,
+      updatedAt: new Date().toISOString()
+    });
+  } else {
+    messages.push(userMsgObj);
+    messages.push(aiMsgObj);
+    await saveToDb(userId, "ChatHistory", {
+      messages,
+      updatedAt: new Date().toISOString()
+    });
+  }
 
   if (parsedResponse.updatedPlanHtml) {
     await saveToDb(userId, "Plan", {
@@ -374,6 +525,7 @@ When you modify or regenerate the plan (updatedPlanHtml), every weightlifting ex
       params: planData?.params || {},
       updatedAt: new Date().toISOString()
     });
+
     await appendPlanHistorySnapshot(userId, parsedResponse.updatedPlanHtml, planData?.params || null);
   }
 
@@ -387,17 +539,79 @@ When you modify or regenerate the plan (updatedPlanHtml), every weightlifting ex
 function computeProgressSignals(trainingLogs) {
   const logs = Array.isArray(trainingLogs) ? trainingLogs : [];
   if (logs.length < 2) {
-    return { hasProgress: false, summary: "Not enough training logs recorded to analyze progress trends." };
+    return { hasProgress: false, summary: "אין מספיק אימונים מתועדים כדי לזהות התקדמות." };
   }
-  return { hasProgress: true, summary: "Consistent workouts logged over recent sessions." };
+  const byExercise = new Map();
+
+  for (const log of logs) {
+    const date = String(log?.date || "");
+    const exercises = Array.isArray(log?.data?.exercises) ? log.data.exercises : [];
+    for (const ex of exercises) {
+      const name = String(ex?.name || "").trim();
+      if (!name) continue;
+      const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+
+      let bestWeight = null;
+      let bestReps = null;
+
+      for (const s of sets) {
+        const w = s?.weight;
+        const r = s?.reps;
+        const wNum = (w === "" || w == null) ? null : Number(w);
+        const rNum = (r === "" || r == null) ? null : Number(r);
+        if (wNum != null && Number.isFinite(wNum)) bestWeight = bestWeight == null ? wNum : Math.max(bestWeight, wNum);
+        if (rNum != null && Number.isFinite(rNum)) bestReps = bestReps == null ? rNum : Math.max(bestReps, rNum);
+      }
+
+      if (bestWeight == null && bestReps == null) continue;
+      if (!byExercise.has(name)) byExercise.set(name, []);
+      byExercise.get(name).push({ date, bestWeight, bestReps });
+    }
+  }
+
+  const progressFindings = [];
+  for (const [name, entries] of byExercise.entries()) {
+    const sorted = entries
+      .filter(e => e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date))
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+    if (sorted.length < 2) continue;
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+
+    const w1 = first.bestWeight;
+    const w2 = last.bestWeight;
+    const r1 = first.bestReps;
+    const r2 = last.bestReps;
+
+    const weightProgress = (w1 != null && w2 != null && Number.isFinite(w1) && Number.isFinite(w2) && (w2 - w1) >= 2.5);
+    const repsProgress = (r1 != null && r2 != null && Number.isFinite(r1) && Number.isFinite(r2) && (r2 - r1) >= 2);
+
+    if (weightProgress) progressFindings.push(`${name}: משקל עלה מ-${w1} ל-${w2}`);
+    else if (repsProgress) progressFindings.push(`${name}: חזרות עלו מ-${r1} ל-${r2}`);
+
+    if (progressFindings.length >= 3) break;
+  }
+
+  if (progressFindings.length === 0) {
+    return {
+      hasProgress: false,
+      summary: "לא זיהיתי סימני התקדמות ברורים לפי המשקלים/חזרות בלוגים (או שחסרים נתונים)."
+    };
+  }
+
+  return {
+    hasProgress: true,
+    summary: `נראית התקדמות בלוגים: ${progressFindings.join("; ")}.`
+  };
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 3500;
+const API_TIMEOUT_MS = 100000; // 100-second timeout to allow full rich generation
+const MAX_OUTPUT_TOKENS = 8000;
 
 async function tryGenerateContent(promptText) {
-  const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON/i.test(String(promptText || ""));
+  const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
@@ -433,10 +647,9 @@ async function tryGenerateContent(promptText) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: "system", content: "You are a concise fitness AI. Immediately return pure HTML for the workout plan. Skip long internal reasoning." },
+          { role: "system", content: "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, progressive (Set 1 <= Set 2 <= Set 3), and anatomically sound for the user's age, weight, and fitness level. Never produce chaotic, decreasing, or illogical weights across sets (e.g. NEVER output 15kg, 20kg, then 5kg). Return complete, rich, detailed HTML for the workout plan." },
           { role: "user", content: promptText }
         ],
-        reasoning: { effort: "low" },
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: 0.2,
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
@@ -464,8 +677,8 @@ async function tryGenerateContent(promptText) {
 
     const isTimeout = err.name === "AbortError";
     const errorMsg = isTimeout 
-      ? "AI request timed out after 20 seconds."
-      : `Error communicating with deepseek/deepseek-v4-flash-0731: ${err.message || 'Server did not respond'}`;
+      ? "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר"
+      : `שגיאה בתקשורת מול model deepseek/deepseek-v4-flash-0731: ${err.message || 'השרת לא הגיב'}`;
 
     if (isJsonChat) {
       return JSON.stringify({
@@ -475,12 +688,21 @@ async function tryGenerateContent(promptText) {
       });
     }
 
-    return `<div class="ai-plan-result"><h3>DeepSeek API Error</h3><p>${errorMsg}</p></div>`;
+    return `
+<div class="ai-plan-result">
+  <h3>שגיאת תקשורת מול DeepSeek</h3>
+  <p>${errorMsg}</p>
+</div>
+`.trim();
   }
 }
 
 async function saveToDb(userId, dataType, data) {
-  const item = { UserID: userId, DataType: dataType, ...data };
+  const item = {
+    UserID: userId,
+    DataType: dataType,
+    ...data
+  };
   await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
 }
 async function getFromDb(userId, dataType) {
@@ -490,87 +712,219 @@ async function deleteFromDb(userId, dataType) {
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { UserID: userId, DataType: dataType } }));
 }
 
+function isYmd(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function parseYmdUtc(ymd) {
+  if (!isYmd(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map((x) => Number(x));
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+function startOfDayUtc(date) {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+function filterLogsLastDays(logs, days) {
+  const safeDays = Number.isFinite(Number(days)) ? Math.max(1, Math.floor(Number(days))) : 30;
+  const today = startOfDayUtc(new Date());
+  const start = startOfDayUtc(new Date(today));
+  start.setUTCDate(today.getUTCDate() - (safeDays - 1));
+
+  return (Array.isArray(logs) ? logs : [])
+    .filter((l) => l && isYmd(l.date))
+    .filter((l) => {
+      const d = parseYmdUtc(l.date);
+      return d && d >= start && d <= today;
+    });
+}
+
+function safeParseJson(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return null;
+  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRecommendations(obj) {
+  const recs = obj?.recommendations || obj?.recs || obj?.insights || obj?.items || [];
+  if (!Array.isArray(recs)) return [];
+  return recs
+    .map((r) => {
+      const type = String(r?.type || "tip").toLowerCase();
+      const title = sanitizeUserFacingText(r?.title || "תובנה");
+      const text = sanitizeUserFacingText(r?.text || r?.message || "");
+      return { type, title, text };
+    })
+    .filter((r) => r.text && String(r.text).trim().length > 0)
+    .slice(0, 8);
+}
+
+function buildAiInsightsFallback({ logsLastDays }) {
+  const count = Array.isArray(logsLastDays) ? logsLastDays.length : 0;
+  if (count <= 0) {
+    return [
+      {
+        type: "tip",
+        title: "אין מספיק נתונים",
+        text: "כרגע אין אימונים מתועדים ב-30 הימים האחרונים. תעד עוד 2–3 אימונים, ואז אוכל לתת תובנות מדויקות יותר.",
+      },
+    ];
+  }
+  return [
+    {
+      type: "tip",
+      title: "סיכום קצר",
+      text: `ב-30 הימים האחרונים תיעדת ${count} אימונים. כדי שאוכל להסיק מסקנות מדויקות יותר, הקפד למלא משקל וחזרות בכל סט ולתעד גם אימונים קלים.`,
+    },
+  ];
+}
+
 async function handleGetAiInsights(userId, payload = {}) {
+  const days = Number.isFinite(Number(payload?.days)) ? Number(payload.days) : 30;
   const trainingLogsResult = await handleGetTrainingLogs(userId);
-  const logs = trainingLogsResult.logs || [];
+  const trainingLogs = trainingLogsResult.logs || [];
+
+  if (trainingLogsResult.error) {
+    return {
+      recommendations: [
+        {
+          type: "warning",
+          title: "לא הצלחתי לטעון נתונים",
+          text: "כרגע אני לא מצליח למשוך את לוג האימונים. נסה שוב עוד מעט.",
+        },
+      ],
+      error: trainingLogsResult.error,
+    };
+  }
+
+  const logsLastDays = filterLogsLastDays(trainingLogs, days);
+  const contextLogs = logsLastDays.slice(0, 20);
+
+  let trainingLogsContext = "אין לוגי אימונים עדיין.";
+  if (contextLogs.length > 0) {
+    trainingLogsContext = `לוגי אימונים (30 ימים אחרונים, מהחדש לישן):\n`;
+    contextLogs.forEach((log) => {
+      trainingLogsContext += `\n--- אימון בתאריך: ${log.date} ---\n`;
+      const exercises = Array.isArray(log?.data?.exercises) ? log.data.exercises : [];
+      for (const ex of exercises) {
+        const exName = ex?.name ? String(ex.name) : "";
+        if (!exName) continue;
+        trainingLogsContext += `תרגיל: ${exName}\n`;
+        const sets = Array.isArray(ex?.sets) ? ex.sets : [];
+        for (let i = 0; i < Math.min(sets.length, 12); i++) {
+          const s = sets[i] || {};
+          const weight = (s.weight != null && s.weight !== "") ? `${s.weight}kg` : "משקל גוף";
+          const reps = (s.reps != null && s.reps !== "") ? `${s.reps} חזרות` : "? חזרות";
+          trainingLogsContext += `   סט ${i + 1}: ${weight} X ${reps}\n`;
+        }
+      }
+      if (log?.data?.notes) trainingLogsContext += `הערות אימון: ${log.data.notes}\n`;
+    });
+  }
+
+  const prompt = `
+אתה FitMentor AI, מאמן אישי חכם.
+
+המטרה שלך: להחזיר תובנות והמלצות קצרות וברורות על סמך לוגי האימונים של 30 הימים האחרונים בלבד.
+
+כללי שפה וסגנון:
+- כתוב בעברית פשוטה וברורה.
+- בלי Markdown בכלל.
+- אל תזכיר מונחים טכניים או שמות שירותים.
+
+פורמט תשובה חובה: JSON בלבד, בדיוק במבנה הזה:
+{
+  "recommendations": [
+    {"type": "tip|warning|neglect|stall|progression", "title": "כותרת קצרה", "text": "טקסט קצר ושימושי"}
+  ]
+}
+
+דרישות:
+- החזר לפחות 1 ועד 6 המלצות.
+- אם אין מספיק מידע להסיק התקדמות במשקלים, כתוב המלצה על מה לתעד כדי לשפר דיוק.
+
+לוגי אימונים:
+${trainingLogsContext}
+`;
+
+  const raw = await tryGenerateContent(prompt);
+  const parsed = safeParseJson(raw);
+  let recommendations = normalizeRecommendations(parsed);
+  if (!recommendations || recommendations.length === 0) {
+    recommendations = buildAiInsightsFallback({ logsLastDays });
+  }
+
   return {
-    recommendations: [
-      { type: "progression", title: "Consistency", text: `You have logged ${logs.length} workout sessions.` },
-      { type: "tip", title: "Recovery", text: "Maintain high protein intake and 7-8 hours of sleep for optimum recovery." }
-    ]
+    recommendations,
+    meta: { days: Math.max(1, Math.floor(Number(days) || 30)), workoutsConsidered: logsLastDays.length },
   };
 }
 
 function buildPlanHistoryKey(iso = new Date().toISOString()) {
   return `${PLAN_HISTORY_PREFIX}${iso}`;
 }
-function summarizePlanForPrompt(planHtml) {
-  return String(planHtml || "").replace(/<[^>]*>/g, " ").slice(0, 500);
+
+function stripHtml(html) {
+  return String(html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
+
+function summarizePlanForPrompt(planHtml, maxChars = 900) {
+  const text = stripHtml(planHtml);
+  if (!text) return "";
+  return text.length <= maxChars ? text : text.slice(0, maxChars) + "…";
+}
+
 function buildPlanHistoryPromptContext(historyItems) {
-  return (historyItems || []).map((h, i) => `${i + 1}) Plan ${h.createdAt}: ${summarizePlanForPrompt(h.planHtml)}`).join("\n");
+  const items = Array.isArray(historyItems) ? historyItems : [];
+  if (items.length === 0) return "(אין היסטוריה)";
+
+  return items
+    .slice(0, MAX_PLAN_HISTORY_TO_FETCH)
+    .map((h, i) => {
+      const when = h?.createdAt ? `(${h.createdAt})` : "";
+      const summary = h?.summary || summarizePlanForPrompt(h?.planHtml);
+      return `${i + 1}) תוכנית קודמת ${when}: ${summary}`;
+    })
+    .join("\n");
 }
+
 async function getPlanHistory(userId, limit = MAX_PLAN_HISTORY_TO_FETCH) {
+  const params = {
+    TableName: TABLE_NAME,
+    KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :prefix)",
+    ExpressionAttributeValues: {
+      ":userId": userId,
+      ":prefix": PLAN_HISTORY_PREFIX
+    },
+    ScanIndexForward: false,
+    Limit: limit
+  };
+
   try {
-    const res = await docClient.send(new QueryCommand({
-      TableName: TABLE_NAME,
-      KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :prefix)",
-      ExpressionAttributeValues: { ":userId": userId, ":prefix": PLAN_HISTORY_PREFIX },
-      ScanIndexForward: false,
-      Limit: limit
-    }));
-    return res?.Items || [];
-  } catch {
+    const result = await docClient.send(new QueryCommand(params));
+    return result?.Items || [];
+  } catch (e) {
     return [];
   }
 }
+
 async function appendPlanHistorySnapshot(userId, planHtml, params) {
   const createdAt = new Date().toISOString();
-  await saveToDb(userId, buildPlanHistoryKey(createdAt), { planHtml, params, summary: summarizePlanForPrompt(planHtml), createdAt });
-}
-
-async function handleGetAchievements(userId, payload = {}) {
-  const logs = Array.isArray(payload.logs) ? payload.logs : [];
-  if (logs.length === 0) {
-    return { achievements: [] };
-  }
-
-  const logsContext = logs.slice(0, 10).map(l => {
-    const exList = (l.exercises || []).map(e => `${e.name}: ${(e.sets || []).map(s => `${s.weight}kg x ${s.reps}`).join(", ")}`).join("; ");
-    return `Date ${l.date || 'Recent'}: ${exList}`;
-  }).join("\n");
-
-  const prompt = `You are a professional fitness mentor analyzing a user's recent training logs.
-Identify achievements to be proud of (e.g. personal records, high volume, consistency, great endurance).
-User recent training logs:
-${logsContext}
-
-Format requirement: Return JSON only in this structure:
-{
-  "achievements": [
-    {
-      "icon": "🏆",
-      "category": "שיא משקל",
-      "title": "לחיצת חזה 120 ק\"ג",
-      "description": "שברת שיא אישי בלחיצת חזה עם 120 ק\"ג ל-2 חזרות!",
-      "date": "2026-07-24"
-    }
-  ]
-}
-
-If no notable achievements exist, return {"achievements": []}.
-AI (JSON):`;
-
-  try {
-    const rawResponse = await tryGenerateContent(prompt);
-    const cleanJson = rawResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-    const parsed = JSON.parse(cleanJson);
-    if (Array.isArray(parsed.achievements)) {
-      return { achievements: parsed.achievements };
-    }
-  } catch (e) {
-    console.error("Error generating achievements:", e);
-  }
-
-  return { achievements: [] };
+  const dataType = buildPlanHistoryKey(createdAt);
+  const summary = summarizePlanForPrompt(planHtml);
+  await saveToDb(userId, dataType, { planHtml, params, summary, createdAt });
 }
