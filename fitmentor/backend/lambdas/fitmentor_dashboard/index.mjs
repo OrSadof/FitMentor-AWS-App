@@ -286,8 +286,8 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
    <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
    <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
    <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-   <p><strong>איך מבצעים ודגשי טכניקה:</strong> [הסבר מפורט ומקצועי: מנח גוף התחלתי, טווח תנועה, נשימה, שרירים מעורבים, טעויות נפוצות להימנע מהן]</p>
-   <p><strong>התקדמות עומס והסבר:</strong> [הסבר מדוע נבחרו המשקלים A,B,C עבור מתאמן במשקל ${weight} ק"ג ברמת ${fitnessDesc}, ואיך להעלות עומס בהדרגה]</p>
+   <p><strong>איך מבצעים ודגשי טכניקה:</strong> [2 משפטים ממוקדים ומקצועיים על מנח גוף, טווח תנועה ודגש טכניקה קריטי]</p>
+   <p><strong>התקדמות עומס והסבר:</strong> [1-2 משפטים ממוקדים על ההיגיון בבחירת המשקלים A,B,C ואיך להעלות עומס בהדרגה]</p>
 
 4. 🔢 חישוב המשקלים חייב להיות 100% אישי, מקצועי ומדורג בהגיון רב:
    • חוק זהב מחייב למשקלים: המשקל חייב לעלות בהדרגה מסט לסט או להישאר זהה (לדוגמה: סט 1: 15 ק"ג | סט 2: 17.5 ק"ג | סט 3: 20 ק"ג, או 15-15-15 ק"ג).
@@ -302,6 +302,8 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
    • 2-3 טיפי התאוששות ומנוחה
    • המלצה לשתייה ושינה
 
+6. ⚡ מהירות ותמציתיות מקצועית: שמור על הסברים קצרים וממוקדים (2-3 משפטים בלבד לתרגיל) כדי שהתוכנית תיווצר במהירות מירבית.
+
 ══════════════════════════════════════
 📌 פורמט פלט: החזר HTML בלבד, ללא markdown, ללא הקדמות, ללא הסברים מחוץ ל-HTML.
 עטוף הכל ב-<div class="ai-plan-result">.
@@ -309,12 +311,32 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
 ══════════════════════════════════════`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const t0 = Date.now();
-  const planHtml = await tryGenerateContent(prompt);
-  console.log(`[TRY_GENERATE_CONTENT_DONE] took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
+  const MAX_ATTEMPTS = 3;
+  let planHtml = null;
 
-  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
-    console.error(`[PLAN_VALIDATION_FAILED] htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const t0 = Date.now();
+    try {
+      console.log(`[GENERATE_PLAN_ATTEMPT] attempt=${attempt}/${MAX_ATTEMPTS}, reqDays=${reqDays}`);
+      const candidateHtml = await tryGenerateContent(prompt);
+      console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${String(candidateHtml || '').length}`);
+
+      if (isLikelyRealPlanHtml(candidateHtml, reqDays)) {
+        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}`);
+        planHtml = candidateHtml;
+        break;
+      } else {
+        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, htmlSnippet: ${String(candidateHtml || '').slice(0, 300)}`);
+      }
+    } catch (attemptErr) {
+      console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}:`, attemptErr);
+    }
+    if (attempt < MAX_ATTEMPTS) {
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  }
+
+  if (!planHtml) {
     throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
@@ -607,7 +629,7 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 100000; // 100-second timeout to allow full rich generation
+const API_TIMEOUT_MS = 85000; // 85-second timeout per attempt to allow up to 3 retries within 300s Lambda limit
 const MAX_OUTPUT_TOKENS = 8000;
 
 async function tryGenerateContent(promptText) {
