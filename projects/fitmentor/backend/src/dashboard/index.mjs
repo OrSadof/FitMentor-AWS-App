@@ -34,6 +34,20 @@ async function incrementMetric(field, by = 1) {
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
 const MAX_PLAN_HISTORY_TO_FETCH = 5;
 
+function countDayHeadings(planHtml) {
+  let s = String(planHtml || '').trim();
+  s = s.replace(/<div\s+class=["']plan-tips["'][\s\S]*$/i, '').trim();
+  const headings = (s.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi) || []);
+  let count = 0;
+  for (const h of headings) {
+    const text = h.replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
+    if (!text || text.length < 2 || text.length > 130) continue;
+    if (/\b(?:טיפים?|תזונה|התאוששות|סיכום|הקדמה|plan-tips)\b/i.test(text)) continue;
+    count++;
+  }
+  return count;
+}
+
 function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   let s = String(planHtml || "").replace(/```(?:html)?/gi, '').replace(/```/g, '').trim();
   if (!s) return false;
@@ -46,8 +60,8 @@ function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   if (lower.includes("לא הצלחתי לייצר תוכנית") || lower.includes("לא הצלחתי לטעון תוכנית") || lower.includes("בעיה בתקשורת") || lower.includes("נסה שוב")) {
     return false;
   }
-  const dayHeadings = (s.match(/<h[2-4][^>]*>[\s\S]*?(?:יום|אימון|Day|Workout)[\s\S]*?<\/h[2-4]>/gi) || []);
-  if (dayHeadings.length < expectedDays) {
+  const realDays = countDayHeadings(s);
+  if (realDays < expectedDays) {
     return false;
   }
 
@@ -82,6 +96,9 @@ export const handler = async (event) => {
       case "generatePlan":
         try { await incrementMetric("aiCallsTotal", 1); } catch {}
         try {
+          // Immediately wipe old plan from DB so polling won't fetch stale plan from previous requests
+          await deleteFromDb(normalizedUserId, "Plan");
+
           const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
           await lambdaClient.send(new InvokeCommand({
             FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
@@ -290,35 +307,13 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
 ══════════════════════════════════════`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  
-  // Retry up to 2 attempts to get a complete plan with all requested days
-  const MAX_ATTEMPTS = 2;
-  let planHtml = null;
-  let lastErr = null;
+  const t0 = Date.now();
+  const planHtml = await tryGenerateContent(prompt);
+  console.log(`[TRY_GENERATE_CONTENT_DONE] took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const t0 = Date.now();
-    try {
-      planHtml = await tryGenerateContent(prompt);
-      console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${String(planHtml || '').length}`);
-
-      if (isLikelyRealPlanHtml(planHtml, reqDays)) {
-        console.log(`[PLAN_VALIDATION_OK] attempt=${attempt}, reqDays=${reqDays}`);
-        break;
-      } else {
-        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
-        planHtml = null;
-        lastErr = `ה-AI החזיר תוכנית חלקית (חסרים ימי אימון). ניסיון ${attempt}/${MAX_ATTEMPTS}.`;
-      }
-    } catch (err) {
-      console.error(`[GENERATE_PLAN_ERROR] attempt=${attempt}:`, err);
-      planHtml = null;
-      lastErr = err.message || 'שגיאה לא ידועה';
-    }
-  }
-
-  if (!planHtml) {
-    throw new Error(lastErr || `ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
+  if (!isLikelyRealPlanHtml(planHtml, reqDays)) {
+    console.error(`[PLAN_VALIDATION_FAILED] htmlSnippet: ${String(planHtml || '').slice(0, 300)}`);
+    throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
   }
 
   await deleteFromDb(userId, "ChatHistory");

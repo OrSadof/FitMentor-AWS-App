@@ -1276,6 +1276,7 @@ export function DashboardPage({ user }) {
 
   const handleCreatePlan = async (params) => {
     setGenerating(true);
+    setPlanHtml(null); // Instantly clear previous plan from screen while generating new plan!
     const reqDays = Math.max(1, parseInt(params?.days, 10) || 3);
     try {
       let finalPlanHtml = null;
@@ -1284,7 +1285,7 @@ export function DashboardPage({ user }) {
         const res = await fitmentorApi.generatePlan(effectiveEmail, params);
         if (res?.plan?.planHtml) {
           const h3Count = (res.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-          if (h3Count >= reqDays) {
+          if (h3Count === reqDays) {
             finalPlanHtml = res.plan.planHtml;
           }
         }
@@ -1292,7 +1293,7 @@ export function DashboardPage({ user }) {
         console.warn('generatePlan HTTP call cut off or timed out, continuing background DB polling...', genErr);
       }
 
-      // If initial response did not contain full plan, poll DB for up to 100 seconds
+      // If initial response did not contain full plan, poll DB for up to 180 seconds
       if (!finalPlanHtml) {
         console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
         const pollStartTime = Date.now();
@@ -1303,7 +1304,7 @@ export function DashboardPage({ user }) {
             const checkRes = await fitmentorApi.getPlan(effectiveEmail);
             if (checkRes?.plan?.planHtml) {
               const h3Count = (checkRes.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-              if (h3Count >= reqDays) {
+              if (h3Count === reqDays) {
                 finalPlanHtml = checkRes.plan.planHtml;
                 console.log(`Successfully retrieved complete ${reqDays}-day plan from DB after ${Math.round((Date.now() - pollStartTime)/1000)}s`);
                 break;

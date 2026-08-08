@@ -18,7 +18,7 @@ async function test6DaysFull() {
         height: 175,
         fitnessLevel: "beginner",
         goal: "חיטוב וירידה במשקל",
-        days: 6,
+        days: 3,
         equipment: "gym"
       }
     })

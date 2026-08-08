@@ -35,6 +35,20 @@ async function incrementMetric(field, by = 1) {
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
 const MAX_PLAN_HISTORY_TO_FETCH = 5;
 
+function countDayHeadings(planHtml) {
+  let s = String(planHtml || '').trim();
+  s = s.replace(/<div\s+class=["']plan-tips["'][\s\S]*$/i, '').trim();
+  const headings = (s.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi) || []);
+  let count = 0;
+  for (const h of headings) {
+    const text = h.replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
+    if (!text || text.length < 2 || text.length > 130) continue;
+    if (/\b(?:טיפים?|תזונה|התאוששות|סיכום|הקדמה|plan-tips)\b/i.test(text)) continue;
+    count++;
+  }
+  return count;
+}
+
 function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   const s = String(planHtml || "").trim();
   if (!s) return false;
@@ -48,8 +62,8 @@ function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
   if (lower.includes("failed") || lower.includes("error") || lower.includes("לא הצלחתי")) {
     return false;
   }
-  const dayHeadings = (s.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []);
-  if (dayHeadings.length < expectedDays) {
+  const realDays = countDayHeadings(s);
+  if (realDays < expectedDays) {
     return false;
   }
   return true;
@@ -83,6 +97,9 @@ export const handler = async (event) => {
       case "generatePlan":
         try { await incrementMetric("aiCallsTotal", 1); } catch {}
         try {
+          // Immediately wipe old plan from DB so polling won't fetch stale plan from previous requests
+          await deleteFromDb(normalizedUserId, "Plan");
+
           const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
           await lambdaClient.send(new InvokeCommand({
             FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
