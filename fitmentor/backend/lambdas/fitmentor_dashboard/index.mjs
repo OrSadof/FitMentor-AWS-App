@@ -3,6 +3,7 @@ dns.setDefaultResultOrder("ipv4first");
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 const GOOGLE_API_KEY1 = process.env.GOOGLE_API_KEY1;
@@ -81,6 +82,28 @@ export const handler = async (event) => {
         break;
       case "generatePlan":
         try { await incrementMetric("aiCallsTotal", 1); } catch {}
+        try {
+          const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
+          await lambdaClient.send(new InvokeCommand({
+            FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
+            InvocationType: "Event",
+            Payload: Buffer.from(JSON.stringify({
+              body: JSON.stringify({
+                action: "bgGeneratePlan",
+                userId: normalizedUserId,
+                payload
+              })
+            }))
+          }));
+          result = { status: "processing", message: "ה-AI במודל DeepSeek בונה עבורך תוכנית אימונים מפורטת. העמוד יתעדכן אוטומטית." };
+        } catch (invErr) {
+          console.warn("Async self-invocation failed, running synchronously...", invErr);
+          result = await handleGeneratePlan(normalizedUserId, payload);
+        }
+        break;
+
+      case "bgGeneratePlan":
+        console.log(`[BG_GENERATE_PLAN_START] userId=${normalizedUserId}`);
         result = await handleGeneratePlan(normalizedUserId, payload);
         break;
       case "savePlan":

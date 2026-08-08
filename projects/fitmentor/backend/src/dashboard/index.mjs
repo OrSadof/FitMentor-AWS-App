@@ -3,6 +3,7 @@ dns.setDefaultResultOrder("ipv4first");
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 
@@ -46,7 +47,7 @@ function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
     return false;
   }
   const dayHeadings = (s.match(/<h[2-4][^>]*>[\s\S]*?(?:יום|אימון|Day|Workout)[\s\S]*?<\/h[2-4]>/gi) || []);
-  if (dayHeadings.length < Math.min(expectedDays, 3)) {
+  if (dayHeadings.length < expectedDays) {
     return false;
   }
 
@@ -80,6 +81,28 @@ export const handler = async (event) => {
         break;
       case "generatePlan":
         try { await incrementMetric("aiCallsTotal", 1); } catch {}
+        try {
+          const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
+          await lambdaClient.send(new InvokeCommand({
+            FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
+            InvocationType: "Event",
+            Payload: Buffer.from(JSON.stringify({
+              body: JSON.stringify({
+                action: "bgGeneratePlan",
+                userId: normalizedUserId,
+                payload
+              })
+            }))
+          }));
+          result = { status: "processing", message: "ה-AI במודל DeepSeek בונה עבורך תוכנית אימונים מפורטת. העמוד יתעדכן אוטומטית." };
+        } catch (invErr) {
+          console.warn("Async self-invocation failed, running synchronously...", invErr);
+          result = await handleGeneratePlan(normalizedUserId, payload);
+        }
+        break;
+
+      case "bgGeneratePlan":
+        console.log(`[BG_GENERATE_PLAN_START] userId=${normalizedUserId}`);
         result = await handleGeneratePlan(normalizedUserId, payload);
         break;
       case "savePlan":
@@ -506,8 +529,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 25000; // 25-second timeout (safely under API Gateway 29s ceiling)
-const MAX_OUTPUT_TOKENS = 3500;
+const API_TIMEOUT_MS = 100000; // 100-second timeout to allow full rich generation
+const MAX_OUTPUT_TOKENS = 8000;
 
 async function tryGenerateContent(promptText) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
@@ -546,10 +569,9 @@ async function tryGenerateContent(promptText) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: "system", content: "You are a concise fitness AI. Immediately return pure HTML for the workout plan. Skip long internal reasoning." },
+          { role: "system", content: "You are an expert fitness AI mentor. Return complete, rich, detailed HTML for the workout plan." },
           { role: "user", content: promptText }
         ],
-        reasoning: { effort: "low" },
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: 0.2,
         ...(isJsonChat ? { response_format: { type: "json_object" } } : {})

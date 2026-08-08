@@ -1276,25 +1276,47 @@ export function DashboardPage({ user }) {
 
   const handleCreatePlan = async (params) => {
     setGenerating(true);
+    const reqDays = Math.max(1, parseInt(params?.days, 10) || 3);
     try {
       let finalPlanHtml = null;
+
       try {
         const res = await fitmentorApi.generatePlan(effectiveEmail, params);
         if (res?.plan?.planHtml) {
-          finalPlanHtml = res.plan.planHtml;
+          const h3Count = (res.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
+          if (h3Count >= reqDays) {
+            finalPlanHtml = res.plan.planHtml;
+          }
         }
       } catch (genErr) {
-        console.warn('generatePlan HTTP call timed out or failed, polling DB for background completion...', genErr);
-        // Wait 4 seconds for Lambda background execution to finish writing to DynamoDB
-        await new Promise(r => setTimeout(r, 4000));
-        const checkRes = await fitmentorApi.getPlan(effectiveEmail).catch(() => null);
-        if (checkRes?.plan?.planHtml) {
-          finalPlanHtml = checkRes.plan.planHtml;
+        console.warn('generatePlan HTTP call cut off or timed out, continuing background DB polling...', genErr);
+      }
+
+      // If initial response did not contain full plan, poll DB for up to 100 seconds
+      if (!finalPlanHtml) {
+        console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
+        const pollStartTime = Date.now();
+
+        while (Date.now() - pollStartTime < 100000) {
+          await new Promise(r => setTimeout(r, 3500));
+          try {
+            const checkRes = await fitmentorApi.getPlan(effectiveEmail);
+            if (checkRes?.plan?.planHtml) {
+              const h3Count = (checkRes.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
+              if (h3Count >= reqDays) {
+                finalPlanHtml = checkRes.plan.planHtml;
+                console.log(`Successfully retrieved complete ${reqDays}-day plan from DB after ${Math.round((Date.now() - pollStartTime)/1000)}s`);
+                break;
+              }
+            }
+          } catch (pollErr) {
+            console.warn('Polling error:', pollErr);
+          }
         }
       }
 
       if (!finalPlanHtml) {
-        throw new Error('ה-AI במודל DeepSeek חווה עומס זמני. אנא לחץ שוב על "צור תוכנית" בעוד כדקה.');
+        throw new Error('ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר');
       }
 
       setPlanHtml(finalPlanHtml);
@@ -1305,7 +1327,7 @@ export function DashboardPage({ user }) {
       setOpenDayIndices({});
     } catch (err) {
       console.error('AI plan generation failed:', err);
-      alert(err.message || 'שגיאה ביצירת תוכנית אימונים ע"י ה-AI. אנא נסה שנית.');
+      alert(err.message || 'ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר');
     } finally {
       setGenerating(false);
     }
