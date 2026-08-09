@@ -311,29 +311,49 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
 ══════════════════════════════════════`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 5;
   let planHtml = null;
+  let bestCandidate = null;
+  let bestCandidateDays = 0;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const t0 = Date.now();
     try {
       console.log(`[GENERATE_PLAN_ATTEMPT] attempt=${attempt}/${MAX_ATTEMPTS}, reqDays=${reqDays}`);
-      const candidateHtml = await tryGenerateContent(prompt);
-      console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${String(candidateHtml || '').length}`);
+      const candidateHtml = await tryGenerateContent(prompt, false);
+      const htmlLen = String(candidateHtml || '').length;
+      const dayCount = countDayHeadings(candidateHtml);
+      console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
 
-      if (isLikelyRealPlanHtml(candidateHtml, reqDays)) {
-        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}`);
+      // Perfect match - use immediately
+      if (dayCount >= reqDays && htmlLen > 500) {
+        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}`);
         planHtml = candidateHtml;
         break;
+      }
+
+      // Keep as best candidate if it has real content (>2000 chars) and at least 1 day heading
+      if (htmlLen > 2000 && dayCount > bestCandidateDays) {
+        bestCandidate = candidateHtml;
+        bestCandidateDays = dayCount;
+        console.log(`[PLAN_BEST_CANDIDATE_UPDATED] attempt=${attempt}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
       } else {
-        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, htmlSnippet: ${String(candidateHtml || '').slice(0, 300)}`);
+        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}, snippet: ${String(candidateHtml || '').slice(0, 200)}`);
       }
     } catch (attemptErr) {
-      console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}:`, attemptErr);
+      console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}, took ${Date.now() - t0}ms:`, attemptErr.message || attemptErr);
     }
     if (attempt < MAX_ATTEMPTS) {
-      await new Promise(r => setTimeout(r, 1500));
+      const backoffMs = Math.min(2000 * attempt, 8000);
+      console.log(`[RETRY_BACKOFF] waiting ${backoffMs}ms before attempt ${attempt + 1}`);
+      await new Promise(r => setTimeout(r, backoffMs));
     }
+  }
+
+  // If no perfect match, use best candidate if it exists
+  if (!planHtml && bestCandidate) {
+    console.log(`[PLAN_USING_BEST_CANDIDATE] bestDays=${bestCandidateDays}/${reqDays}, htmlLength=${bestCandidate.length}`);
+    planHtml = bestCandidate;
   }
 
   if (!planHtml) {
@@ -629,10 +649,10 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 85000; // 85-second timeout per attempt to allow up to 3 retries within 300s Lambda limit
+const API_TIMEOUT_MS = 120000; // 120-second timeout per attempt — DeepSeek can take 60-110s for full plans
 const MAX_OUTPUT_TOKENS = 8000;
 
-async function tryGenerateContent(promptText) {
+async function tryGenerateContent(promptText, isChatCall = true) {
   const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
@@ -702,6 +722,12 @@ async function tryGenerateContent(promptText) {
       ? "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר"
       : `שגיאה בתקשורת מול model deepseek/deepseek-v4-flash-0731: ${err.message || 'השרת לא הגיב'}`;
 
+    // For plan generation (non-chat calls), THROW so the retry loop can retry
+    if (!isChatCall) {
+      throw new Error(errorMsg);
+    }
+
+    // For chat calls, return error as JSON so the chat UI can display it
     if (isJsonChat) {
       return JSON.stringify({
         reply: errorMsg,

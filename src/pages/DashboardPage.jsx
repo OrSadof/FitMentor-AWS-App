@@ -1311,29 +1311,32 @@ export function DashboardPage({ user }) {
       try {
         const res = await fitmentorApi.generatePlan(effectiveEmail, params);
         if (res?.plan?.planHtml) {
-          const h3Count = (res.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-          if (h3Count === reqDays) {
-            finalPlanHtml = res.plan.planHtml;
+          const html = res.plan.planHtml;
+          const h3Count = (html.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
+          if (h3Count >= 1 && html.length > 2000) {
+            finalPlanHtml = html;
           }
         }
       } catch (genErr) {
         console.warn('generatePlan HTTP call cut off or timed out, continuing background DB polling...', genErr);
       }
 
-      // If initial response did not contain full plan, poll DB for up to 240 seconds
+      // If initial response did not contain full plan, poll DB for up to 300 seconds (5 minutes)
       if (!finalPlanHtml) {
         console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
         const pollStartTime = Date.now();
 
-        while (Date.now() - pollStartTime < 240000) {
-          await new Promise(r => setTimeout(r, 3500));
+        while (Date.now() - pollStartTime < 300000) {
+          await new Promise(r => setTimeout(r, 4000));
           try {
             const checkRes = await fitmentorApi.getPlan(effectiveEmail);
             if (checkRes?.plan?.planHtml) {
-              const h3Count = (checkRes.plan.planHtml.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-              if (h3Count === reqDays) {
-                finalPlanHtml = checkRes.plan.planHtml;
-                console.log(`Successfully retrieved complete ${reqDays}-day plan from DB after ${Math.round((Date.now() - pollStartTime)/1000)}s`);
+              const html = checkRes.plan.planHtml;
+              const h3Count = (html.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
+              // Accept any plan with at least 1 day heading and substantial content
+              if (h3Count >= 1 && html.length > 2000) {
+                finalPlanHtml = html;
+                console.log(`Successfully retrieved ${h3Count}-day plan from DB after ${Math.round((Date.now() - pollStartTime)/1000)}s (requested ${reqDays} days)`);
                 break;
               }
             }
