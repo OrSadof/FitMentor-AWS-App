@@ -282,20 +282,20 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
 2. לכל יום אימון צור בדיוק 3-4 תרגילים אופטימליים, שנבחרו ספציפית עבור המתאמן הזה.
    בחר תרגילים שמתאימים ל: רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרת ${goal}.
 
-3. לכל תרגיל רשום בדיוק 5 פסקאות <p> בפורמט ה-HTML הבא (חובה!):
+3. לכל תרגיל רשום בדיוק 5 פסקאות <p> בפורמט ה-HTML הבא (חובה למלא את כולן בכל תרגיל!):
    <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
    <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
    <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
    <p><strong>איך מבצעים ודגשי טכניקה:</strong> [2 משפטים על מנח גוף, טווח תנועה ודגש טכניקה]</p>
    <p><strong>התקדמות עומס והסבר:</strong> [1-2 משפטים על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
 
-4. 🔢 כלל פשוט וברור למשקלים:
-   כשאתה מחליט שתרגיל כולל X סטים, חשב ורשום משקל לכל סט — בדיוק X ערכי משקל!
-   דוגמה: אם בחרת 3 סטים → <strong>משקל מומלץ:</strong> סט 1: 15 ק"ג | סט 2: 17.5 ק"ג | סט 3: 20 ק"ג
-   דוגמה: אם בחרת 4 סטים → <strong>משקל מומלץ:</strong> סט 1: 10 ק"ג | סט 2: 12 ק"ג | סט 3: 14 ק"ג | סט 4: 16 ק"ג
-   • המשקל עולה בהדרגה מסט לסט או נשאר זהה. אסור לרדת במשקל.
-   • התאם משקלים לסוג התרגיל ולמתאמן (${weight} ק"ג, ${fitnessDesc}).
-   • תרגילי משקל גוף / אירובי: רשום <strong>משקל מומלץ:</strong> משקל גוף
+4. 🔢 כללים מחייבים למשקלים (חובה לעמוד ב-100% מהם!):
+   • ⚠️ חובה: כל תרגיל חייב לכלול משקלים מספריים בקילו (ק"ג) לכל סט! אל תרשום "משקל גוף" - רשום תמיד ערך מספרי בק"ג לכל סט (לדוגמה 0 ק"ג למשקל גוף טהור, או המשקל האופטימלי בק"ג).
+   • ⚠️ חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט הראשון חייב להיות הגבוה ביותר (כשהמתאמן רענן), ובסטים הבאים המשקל יורד בהדרגה או נשאר זהה עקב עייפות.
+   • חל איסור מוחלט שהמשקל יעלה מסט לסט! (לדוגמה: אסור בשום אופן לרשום סט 1: 15 ק"ג, סט 2: 20 ק"ג!).
+   • דוגמה תקינה ל-3 סטים: <strong>משקל מומלץ:</strong> סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג (או 20-20-20 ק"ג).
+   • דוגמה תקינה ל-4 סטים: <strong>משקל מומלץ:</strong> סט 1: 16 ק"ג | סט 2: 14 ק"ג | סט 3: 12 ק"ג | סט 4: 10 ק"ג.
+   • התאם את ערכי הקילו לסוג התרגיל ולנתוני המתאמן (${weight} ק"ג, ${fitnessDesc}).
 
 5. בסוף התוכנית כלול <div class="plan-tips"> עם:
    • 3-4 טיפי תזונה מותאמים למטרת ${goal}
@@ -689,7 +689,7 @@ async function tryGenerateContent(promptText, isChatCall = true) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: "system", content: "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, progressive (Set 1 <= Set 2 <= Set 3), and anatomically sound for the user's age, weight, and fitness level. Never produce chaotic, decreasing, or illogical weights across sets (e.g. NEVER output 15kg, 20kg, then 5kg). Return complete, rich, detailed HTML for the workout plan." },
+          { role: "system", content: "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never increase weights across sets (e.g. NEVER output 15kg then 20kg). Always provide numerical kg values for every set of every exercise (never output 'משקל גוף'). Return complete, rich, detailed HTML for the workout plan." },
           { role: "user", content: promptText }
         ],
         max_tokens: MAX_OUTPUT_TOKENS,
