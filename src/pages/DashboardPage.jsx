@@ -308,23 +308,9 @@ function parseExercisesFromContent(rawContent) {
 function PlanExerciseItem({ ex }) {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Extract expected number of sets from statsBadges
-  const setsBadge = ex.statsBadges.find(b => b.label === 'סטים');
-  const expectedSets = setsBadge ? parseInt(setsBadge.val, 10) || 3 : 3;
-
-  // Build final display weights: fill missing sets by repeating the last known weight
-  let displayWeights = null;
-  const hasBodyweightText = ex.weightText && /משקל\s*גוף|body\s*weight|ללא\s*משקל/i.test(ex.weightText);
-  const hasWeightText = ex.weightText && !hasBodyweightText;
-
-  if (ex.setWeights && ex.setWeights.length > 0) {
-    const raw = [...ex.setWeights];
-    // Fill missing sets: if we have fewer weights than sets, repeat the last weight
-    while (raw.length < expectedSets) {
-      raw.push(raw[raw.length - 1]);
-    }
-    displayWeights = raw.slice(0, expectedSets);
-  }
+  // Display ONLY what the AI API returned — no system-side computation
+  const setWeights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
+  const hasWeightText = ex.weightText && ex.weightText.length > 0;
 
   return (
     <div className="plan-exercise-card" data-open={isOpen}>
@@ -356,20 +342,20 @@ function PlanExerciseItem({ ex }) {
             </div>
           )}
 
-          {/* Recommended weight per set — numeric weights */}
-          {displayWeights && (
+          {/* Recommended weight per set — displayed exactly as returned by AI API */}
+          {setWeights && (
             <div className="plan-ex-weights">
               <span className="plan-ex-weights-label">🏋️ משקל מומלץ:</span>
               <div className="plan-ex-weights-sets">
-                {displayWeights.map((w, i) => (
+                {setWeights.map((w, i) => (
                   <span key={i} className="plan-ex-weight-set">סט {i + 1} — {w} ק"ג</span>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Recommended weight — bodyweight or text description */}
-          {!displayWeights && (hasBodyweightText || hasWeightText) && (
+          {/* Recommended weight — text description from AI (e.g. "משקל גוף") */}
+          {!setWeights && hasWeightText && (
             <div className="plan-ex-weights">
               <span className="plan-ex-weights-label">🏋️ משקל מומלץ:</span>
               <div className="plan-ex-weights-sets">
