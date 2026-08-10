@@ -649,8 +649,33 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 120000; // 120-second timeout for DeepSeek V4 Flash to generate full 6-day plans
-const MAX_OUTPUT_TOKENS = 3500;
+const API_TIMEOUT_MS = 75000; // 75-second hard timeout for plan generation to give DeepSeek enough time to return full plans
+const MAX_OUTPUT_TOKENS = 3000;
+
+async function fetchWithHardTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  let timerId = null;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      try { controller.abort(); } catch {}
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const response = await Promise.race([
+      fetch(url, { ...options, signal: controller.signal }),
+      timeoutPromise
+    ]);
+    if (timerId) clearTimeout(timerId);
+    return response;
+  } catch (err) {
+    if (timerId) clearTimeout(timerId);
+    try { controller.abort(); } catch {}
+    throw err;
+  }
+}
 
 async function tryGenerateContent(promptText, isChatCall = false) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
@@ -673,20 +698,17 @@ async function tryGenerateContent(promptText, isChatCall = false) {
   }
 
   const attempts = isChatCall ? 2 : 3;
-  const timeoutMs = isChatCall ? 25000 : API_TIMEOUT_MS;
+  const timeoutMs = isChatCall ? 18000 : API_TIMEOUT_MS;
   const maxTokens = isChatCall ? 1200 : MAX_OUTPUT_TOKENS;
   let lastErr = null;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const t0 = Date.now();
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, attempt=${attempt}/${attempts}, isChatCall=${isChatCall}`);
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetchWithHardTimeout("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${openRouterKey}`,
@@ -707,9 +729,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
           max_tokens: maxTokens,
           temperature: 0.5
         })
-      });
-
-      clearTimeout(timeoutId);
+      }, timeoutMs);
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
@@ -726,11 +746,10 @@ async function tryGenerateContent(promptText, isChatCall = false) {
 
       throw new Error("Empty response returned from DeepSeek API.");
     } catch (err) {
-      clearTimeout(timeoutId);
       lastErr = err;
       console.warn(`[DEEPSEEK_FAILED] attempt=${attempt}/${attempts}, took ${Date.now() - t0}ms:`, err.message || err);
       if (attempt < attempts) {
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
   }
