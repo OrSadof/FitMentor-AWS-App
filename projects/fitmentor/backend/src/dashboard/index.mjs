@@ -287,8 +287,8 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
    <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
    <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
    <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-   <p><strong>איך מבצעים ודגשי טכניקה:</strong> [2 משפטים על מנח גוף, טווח תנועה ודגש טכניקה]</p>
-   <p><strong>התקדמות עומס והסבר:</strong> [1-2 משפטים על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
+   <p><strong>דגשי טכניקה:</strong> [משפט 1 קצר בלבד ממוקד על מנח גוף וטכניקה]</p>
+   <p><strong>התקדמות עומס והסבר:</strong> [משפט 1 קצר בלבד ממוקד על העלאת עומס]</p>
 
 4. 🔢 כללים מחייבים למשקלים (חובה לעמוד ב-100% מהם!):
    • ⚠️ חובה: כל תרגיל חייב לכלול משקלים מספריים בקילו (ק"ג) לכל סט! אל תרשום "משקל גוף" - רשום תמיד ערך מספרי בק"ג לכל סט (לדוגמה 0 ק"ג למשקל גוף טהור, או המשקל האופטימלי בק"ג).
@@ -326,14 +326,14 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
 
-      // Accept plan immediately if it has substantial content (>2000 chars) and at least 1 day heading
-      if (htmlLen > 2000 && dayCount >= 1) {
+      // Accept plan immediately if it has substantial content (>1800 chars) AND contains all requested day headings
+      if (htmlLen > 1800 && dayCount >= reqDays) {
         console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
         planHtml = candidateHtml;
         break;
       }
 
-      // Fallback for smaller valid plans
+      // Fallback for smaller valid plans with exact day headings
       if (dayCount >= reqDays && htmlLen > 500) {
         console.log(`[PLAN_VALIDATION_PERFECT] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}`);
         planHtml = candidateHtml;

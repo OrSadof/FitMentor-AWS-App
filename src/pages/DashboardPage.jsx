@@ -302,7 +302,30 @@ function parseExercisesFromContent(rawContent) {
   });
 
   if (currentEx) exercises.push(currentEx);
-  return exercises.filter(ex => ex.title && ex.title !== 'strong>' && ex.title !== '<strong' && ex.title !== 'strong');
+
+  const cleanExercises = exercises.filter(ex => ex.title && ex.title !== 'strong>' && ex.title !== '<strong' && ex.title !== 'strong');
+
+  cleanExercises.forEach(ex => {
+    if (!ex.statsBadges.some(b => b.label === 'סטים')) {
+      ex.statsBadges.push({ label: 'סטים', val: '3 סטים', type: 'cyan' });
+    }
+    if (!ex.statsBadges.some(b => b.label === 'חזרות')) {
+      ex.statsBadges.push({ label: 'חזרות', val: '10-12 חזרות', type: 'emerald' });
+    }
+    if (!ex.statsBadges.some(b => b.label === 'מנוחה')) {
+      ex.statsBadges.push({ label: 'מנוחה', val: '60 שניות', type: 'purple' });
+    }
+
+    if (ex.setWeights && ex.setWeights.length === 1) {
+      const w1 = ex.setWeights[0];
+      ex.setWeights = [w1, Math.max(1, Math.round(w1 * 0.85 * 10) / 10), Math.max(1, Math.round(w1 * 0.75 * 10) / 10)];
+    } else if (ex.setWeights && ex.setWeights.length === 2) {
+      const w2 = ex.setWeights[1];
+      ex.setWeights.push(Math.max(1, Math.round(w2 * 0.85 * 10) / 10));
+    }
+  });
+
+  return cleanExercises;
 }
 
 function PlanExerciseItem({ ex }) {
