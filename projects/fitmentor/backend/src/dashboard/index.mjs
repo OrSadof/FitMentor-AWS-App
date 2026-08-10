@@ -649,7 +649,7 @@ function computeProgressSignals(trainingLogs) {
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 const API_TIMEOUT_MS = 120000; // 120-second timeout for DeepSeek V4 Flash to generate full 6-day plans
-const MAX_OUTPUT_TOKENS = 6000;
+const MAX_OUTPUT_TOKENS = 3500;
 
 async function tryGenerateContent(promptText, isChatCall = false) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
@@ -704,7 +704,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
             { role: "user", content: promptText }
           ],
           max_tokens: maxTokens,
-          temperature: 0.2
+          temperature: 0.5
         })
       });
 
