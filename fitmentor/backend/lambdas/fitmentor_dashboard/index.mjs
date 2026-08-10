@@ -401,7 +401,11 @@ async function handleChat(userId, { message, userName }) {
   }
 
   let messages = chatData?.messages || [];
-  const currentPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
+  const rawPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
+  // Convert heavy plan HTML to lightweight text summary for fast 2-second Chat AI responses
+  const currentPlanSummary = rawPlanHtml.length > 2500
+    ? rawPlanHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 2000)
+    : rawPlanHtml;
 
   let trainingLogsContext = "אין לוגי אימונים עדיין.";
 
@@ -459,7 +463,7 @@ async function handleChat(userId, { message, userName }) {
   - הנתונים נשמרים ומאפשרים לך לנתח שיפור בכוח/נפח.
 
   המצב הנוכחי:
-  1. תוכנית אימונים נוכחית (HTML מצורף למטה).
+  1. תוכנית אימונים נוכחית (תמצית): ${currentPlanSummary}
   2. היסטוריית אימונים מפורטת (מצורפת למטה) - השתמש בה כדי לנתח התקדמות במשקלי עבודה!
   3. בקשת המשתמש.
 
@@ -472,33 +476,21 @@ async function handleChat(userId, { message, userName }) {
        במקום זה החזר uiAction = "openNewPlanForm" ובקש ממנו למלא מחדש את הטופס.
      - אם אין מספיק לוגים/אין סימני התקדמות, שאל 1–2 שאלות קצרות כדי להבין למה הוא רוצה להחליף, והצע פתרון פשוט.
   
-  פורמט תשובה חובה (JSON בלבד!):
+  פורמט תשובה חובה (החזר JSON תקין בלבד, ללא markdown וללא טקסט מחוץ ל-JSON):
   {
-    "reply": "הטקסט שאתה עונה למשתמש",
-    "updatedPlanHtml": "ה-HTML המלא והמתוקן (או null אם אין שינוי)",
-    "uiAction": "openNewPlanForm" או null
+    "reply": "הטקסט שאתה עונה למשתמש בעברית (ללא מילוט מורכב)",
+    "updatedPlanHtml": null,
+    "uiAction": null
   }
 
-  התוכנית הנוכחית (HTML):
-  ${currentPlanHtml}
-
-  פרטי המתאמן כפי שמורים במערכת (כדי שלא תשאל שוב את אותם פרטים):
-  ${planParamsContext}
-
-  היסטוריית תוכניות קודמות (סיכום):
-  ${historyContext}
-
-  סיכום התקדמות אוטומטי (על בסיס הלוגים):
-  ${progress.summary}
-
-  היסטוריית אימונים (לוגים):
-  ${trainingLogsContext}
+  פרטי המתאמן: ${planParamsContext}
+  סיכום התקדמות: ${progress.summary}
   `;
 
-  const recentHistory = messages.slice(-6).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
+  const recentHistory = messages.slice(-4).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
   const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
 
-  const rawResponse = await tryGenerateContent(fullPrompt);
+  const rawResponse = await tryGenerateContent(fullPrompt, true);
 
   let parsedResponse;
   try {
@@ -518,7 +510,7 @@ async function handleChat(userId, { message, userName }) {
       extractedReply = rawResponse.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').replace(/^\s*\{\s*"reply"\s*:\s*"/, '').replace(/"\s*,\s*"updatedPlanHtml".*$/s, '').trim();
     }
     parsedResponse = {
-      reply: extractedReply || "הבנתי את הבקשה שלך. אעדכן את התוכנית בהתאם.",
+      reply: extractedReply || "הבנתי אותך. איך אוכל לעזור לך עוד היום?",
       updatedPlanHtml: null,
       uiAction: null
     };
@@ -649,18 +641,17 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 120000; // 120-second timeout per attempt — DeepSeek can take 60-110s for full plans
-const MAX_OUTPUT_TOKENS = 8000;
+const API_TIMEOUT_MS = 75000; // 75-second timeout per plan attempt to fail fast and retry
+const MAX_OUTPUT_TOKENS = 4000;
 
-async function tryGenerateContent(promptText, isChatCall = true) {
-  const isJsonChat = /AI \(JSON\):\s*$/.test(String(promptText || "")) || /JSON בלבד/i.test(String(promptText || ""));
+async function tryGenerateContent(promptText, isChatCall = false) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
     console.error("Missing OPENROUTER_API_KEY for DeepSeek execution.");
-    if (isJsonChat) {
+    if (isChatCall) {
       return JSON.stringify({
-        reply: "שגיאת הגדרה: מפתח OPENROUTER_API_KEY חסר במערכת.",
+        reply: "מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
         updatedPlanHtml: null,
         uiAction: null,
       });
@@ -673,76 +664,78 @@ async function tryGenerateContent(promptText, isChatCall = true) {
 `.trim();
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const attempts = isChatCall ? 2 : 1;
+  let lastErr = null;
 
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openRouterKey}`,
-        "HTTP-Referer": "https://fitmentor.app",
-        "X-Title": "FitMentor"
-      },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          { role: "system", content: "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never increase weights across sets (e.g. NEVER output 15kg then 20kg). Always provide numerical kg values for every set of every exercise (never output 'משקל גוף'). Return complete, rich, detailed HTML for the workout plan." },
-          { role: "user", content: promptText }
-        ],
-        max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.2,
-        ...(isJsonChat ? { response_format: { type: "json_object" } } : {})
-      })
-    });
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const timeoutMs = isChatCall ? 18000 : API_TIMEOUT_MS; // 18s for Chat to stay under Gateway 29s limit
+    const maxTokens = isChatCall ? 1200 : 3500;
 
-    clearTimeout(timeoutId);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      console.error(`DeepSeek API Error ${response.status}:`, errText);
-      throw new Error(`DeepSeek API Returned Status ${response.status}`);
-    }
-
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content;
-    if (typeof text === "string" && text.trim().length > 0) {
-      return text;
-    }
-
-    throw new Error("Empty response returned from DeepSeek API.");
-  } catch (err) {
-    clearTimeout(timeoutId);
-    console.error("DeepSeek API Execution Error:", err);
-
-    const isTimeout = err.name === "AbortError";
-    const errorMsg = isTimeout 
-      ? "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר"
-      : `שגיאה בתקשורת מול model deepseek/deepseek-v4-flash-0731: ${err.message || 'השרת לא הגיב'}`;
-
-    // For plan generation (non-chat calls), THROW so the retry loop can retry
-    if (!isChatCall) {
-      throw new Error(errorMsg);
-    }
-
-    // For chat calls, return error as JSON so the chat UI can display it
-    if (isJsonChat) {
-      return JSON.stringify({
-        reply: errorMsg,
-        updatedPlanHtml: null,
-        uiAction: null,
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${openRouterKey}`,
+          "HTTP-Referer": "https://fitmentor.app",
+          "X-Title": "FitMentor"
+        },
+        body: JSON.stringify({
+          model: DEEPSEEK_MODEL,
+          messages: [
+            {
+              role: "system",
+              content: isChatCall
+                ? "You are FitMentor AI, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON."
+                : "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never increase weights across sets (e.g. NEVER output 15kg then 20kg). Always provide numerical kg values for every set of every exercise (never output 'משקל גוף'). Return complete, concise, rich HTML for the workout plan."
+            },
+            { role: "user", content: promptText }
+          ],
+          max_tokens: maxTokens,
+          temperature: 0.2
+        })
       });
-    }
 
-    return `
-<div class="ai-plan-result">
-  <h3>שגיאת תקשורת מול DeepSeek</h3>
-  <p>${errorMsg}</p>
-</div>
-`.trim();
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        console.error(`DeepSeek API Error HTTP ${response.status} (attempt ${attempt}):`, errText);
+        throw new Error(`DeepSeek API Returned Status ${response.status}`);
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content;
+      if (typeof text === "string" && text.trim().length > 0) {
+        return text;
+      }
+
+      throw new Error("Empty response returned from DeepSeek API.");
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastErr = err;
+      console.warn(`DeepSeek API Attempt ${attempt}/${attempts} failed:`, err.message || err);
+      if (attempt < attempts) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
   }
+
+  // Handle final failure
+  if (!isChatCall) {
+    throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
+  }
+
+  // Polite Hebrew fallback for Chat UI - no technical error details
+  return JSON.stringify({
+    reply: "סליחה, המערכת עמוסה מעט כרגע. אנא לשאול אותי שוב בעוד כמה שניות, אשמח לעזור!",
+    updatedPlanHtml: null,
+    uiAction: null,
+  });
 }
 
 async function saveToDb(userId, dataType, data) {
