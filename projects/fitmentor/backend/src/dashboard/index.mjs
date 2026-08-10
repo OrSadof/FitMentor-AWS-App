@@ -325,15 +325,21 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
 
-      // Perfect match - use immediately
-      if (dayCount >= reqDays && htmlLen > 500) {
-        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}`);
+      // Accept plan immediately if it has substantial content (>2000 chars) and at least 1 day heading
+      if (htmlLen > 2000 && dayCount >= 1) {
+        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
         planHtml = candidateHtml;
         break;
       }
 
-      // Keep as best candidate if it has real content (>2000 chars) and at least 1 day heading
-      if (htmlLen > 2000 && dayCount > bestCandidateDays) {
+      // Fallback for smaller valid plans
+      if (dayCount >= reqDays && htmlLen > 500) {
+        console.log(`[PLAN_VALIDATION_PERFECT] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}`);
+        planHtml = candidateHtml;
+        break;
+      }
+
+      if (htmlLen > 1000 && dayCount > bestCandidateDays) {
         bestCandidate = candidateHtml;
         bestCandidateDays = dayCount;
         console.log(`[PLAN_BEST_CANDIDATE_UPDATED] attempt=${attempt}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
