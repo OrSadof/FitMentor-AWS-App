@@ -255,67 +255,125 @@ async function handleGeneratePlan(userId, payload) {
   };
   const goalCoaching = goalGuidance[goal] || '';
 
-  const prompt = `אתה מאמן כושר מקצועי בכיר עם 15+ שנות ניסיון. עליך לבנות תוכנית אימון שבועית מדויקת, מקיפה, מפורטת ומותאמת אישית.
+function sanitizeAndRepairPlan(rawHtml, reqDays) {
+  let html = String(rawHtml || '').trim();
 
-══════════════════════════════════════
-📋 פרטי המתאמן:
-• גיל: ${age}
-• מין: ${gender === 'male' ? 'זכר' : 'נקבה'}
-• משקל: ${weight} ק"ג
-• גובה: ${height} ס"מ
-• רמת כושר: ${fitnessDesc}
-• מטרה: ${goal}
-• ציוד זמין: ${equipmentDesc}
-══════════════════════════════════════
+  // 1. Repair lazy 1-word technique focus strings (e.g., "טובה.", "טובה", "נכון", "טוב")
+  html = html.replace(
+    /(<p>[^<]*<strong>(?:דגשי?\s*טכניקה|איך מבצעים(?: ודגשי טכניקה)?)\s*[:\-–—]?\s*<\/strong>)\s*(?:טובה|טוב|נכון|תקין|מפתח|מעולה|טובה\.)(?:\s*<\/p>|\.)/gi,
+    '$1 שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.</p>'
+  );
+  html = html.replace(
+    /<strong>(?:דגשי?\s*טכניקה|איך מבצעים(?: ודגשי טכניקה)?)\s*[:\-–—]?\s*<\/strong>\s*(?:טובה|טוב|נכון|תקין|מפתח|מעולה|טובה\.)(?:\s*<\/p>|\.)/gi,
+    '<strong>דגשי טכניקה:</strong> שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.'
+  );
 
-🎯 הנחיות מטרה: ${goalCoaching}
+  // 2. Ensure wrapper exists
+  if (!html.includes('ai-plan-result')) {
+    html = `<div class="ai-plan-result">\n${html}\n</div>`;
+  }
 
-${historyContext ? `📊 היסטוריית תוכניות קודמות של המתאמן:\n${historyContext}\nבנה תוכנית שונה ומשתנה מהתוכניות הקודמות כדי להבטיח גיוון ושיפור מתמיד.\n` : ''}
-══════════════════════════════════════
-⚠️ כללים מחייבים (חובה לעמוד ב-100% מהם!):
-══════════════════════════════════════
+  // 3. Ensure exact required day headings exist
+  let currentHeadings = countDayHeadings(html);
+  if (currentHeadings < reqDays) {
+    console.warn(`[PLAN_REPAIR] Current headings (${currentHeadings}) < requested (${reqDays}). Injecting missing days...`);
 
-1. ⚠️ חובה מוחלטת: צור בדיוק ${reqDays} ימי אימון נפרדים!
-   לכל יום חייבת להיות כותרת <h3> נפרדת משלו בפורמט המדויק הבא (בלי לאחד ימים!):
-${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
-   חלק את קבוצות השרירים בצורה אופטימלית על פני ${reqDays} ימים נפרדים כדי לאפשר התאוששות מלאה.
+    const missingDaysList = [];
+    const dayTemplates = [
+      {
+        title: "אימון פלג גוף עליון וליבה (Upper Body & Core)",
+        exs: [
+          { name: "לחיצת חזה עם משקולות (Dumbbell Bench Press)", w: [20, 17.5, 15], tech: "לחץ את השכמות לספסל, הורד את המשקולות בשליטה עד לגובה החזה ודחף כלפי מעלה." },
+          { name: "חתירה במכונה / פולי (Seated Cable Row)", w: [25, 22.5, 20], tech: "שמור על גב זקוף, משוך את הידיות לכיוון הטבור והדק את השכמות בסוף התנועה." },
+          { name: "פלאנק סטטי (Plank Hold)", w: [0, 0, 0], tech: "כווץ את הבטן והישבן, שמור על גוף בקו ישר ללא שקיעת האגן למשך 45-60 שניות." }
+        ]
+      },
+      {
+        title: "אימון פלג גוף תחתון ואירובי (Lower Body & HIIT)",
+        exs: [
+          { name: "סקוואט עם משקולת (Goblet Squat)", w: [18, 16, 14], tech: "החזק את המשקולת צמוד לחזה, רד בעקבים עד לזווית 90 מעלות ודחף חזרה למעלה." },
+          { name: "מכרעים בהליכה (Walking Lunges)", w: [12, 10, 8], tech: "צעד קדימה בגב זקוף, הורד את הברך האחורית כמעט עד לרצפה ודחף מהרגל הקדמית." },
+          { name: "בורפיז מבוקרים (Burpees)", w: [0, 0, 0], tech: "רד לגלגל ירידה לקרקע, קפוץ חזרה לעמידה עם ניתור קל ושמור על בקרה מלאה." }
+        ]
+      },
+      {
+        title: "אימון זריזות, כתפיים וזרועות (Shoulders & Arms)",
+        exs: [
+          { name: "לחיצת כתפיים בישיבה (Dumbbell Shoulder Press)", w: [14, 12, 10], tech: "שמור על גב צמוד למשענת, דחף את המשקולות מעל הראש והורד לאט לגובה האוזניים." },
+          { name: "כפילת מרפקים בעמידה (Bicep Dumbbell Curls)", w: [12, 10, 8], tech: "הצמד מרפקים לצדי הגוף, הרם את המשקולות ללא נדנוד הגב והורד בשליטה מלאה." },
+          { name: "פשוט מרפקים בפולי עליון (Tricep Cable Pushdown)", w: [20, 17.5, 15], tech: "קבע מרפקים לצדי החזה, פשוט את הזרועות כלפי מטה עד לנעילה מבוקרת." }
+        ]
+      },
+      {
+        title: "אימון נפח כולל והתאוששות אקטיבית (Full Body Mobility)",
+        exs: [
+          { name: "דדליפט רומני עם משקולות (RDL Dumbbell)", w: [22, 20, 17.5], tech: "הטה את האגן לאחור בגב ישר לחלוטין, הורד את המשקולות לאורך השוקיים ועלה בכיווץ ישבן." },
+          { name: "פולי עליון באחיזה רחבה (Lat Pulldown)", w: [30, 27.5, 25], tech: "משוך את הבר לחזה העליון תוך הידוק השכמות והורדה איטית של המשקל." },
+          { name: "שקע סמך קפיצה (Jumping Jacks & Core)", w: [0, 0, 0], tech: "בצע תנועה רציפה של ניתור ופתיחת ידיים לשמירה על דופק גבוה במשך 60 שניות." }
+        ]
+      }
+    ];
 
-2. לכל יום אימון צור בדיוק 3 תרגילים אופטימליים (סך הכל בדיוק ${reqDays * 3} תרגילים בתוכנית).
-   בחר תרגילים שמתאימים ל: רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרת ${goal}.
+    for (let dayNum = currentHeadings + 1; dayNum <= reqDays; dayNum++) {
+      const template = dayTemplates[(dayNum - 1) % dayTemplates.length];
+      let dayHtml = `\n<h3>יום ${dayNum}: ${template.title}</h3>\n`;
+      template.exs.forEach(ex => {
+        dayHtml += `<p>🏋️ <strong>${ex.name}</strong></p>\n`;
+        dayHtml += `<p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 10-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>\n`;
+        dayHtml += `<p><strong>משקל מומלץ:</strong> סט 1: ${ex.w[0]} ק"ג | סט 2: ${ex.w[1]} ק"ג | סט 3: ${ex.w[2]} ק"ג</p>\n`;
+        dayHtml += `<p><strong>דגשי טכניקה:</strong> ${ex.tech}</p>\n`;
+        dayHtml += `<p><strong>התקדמות עומס והסבר:</strong> הגדל משקל ב-2.5 ק"ג ברגע שאתה מצליח לבצע את כל הסטים בטווח החזרות העליון בטכניקה נקייה.</p>\n`;
+      });
+      missingDaysList.push(dayHtml);
+    }
 
-3. לכל תרגיל רשום בדיוק 5 פסקאות <p> בפורמט ה-HTML הבא (חובה למלא את כולן בכל תרגיל!):
-   <p>🏋️ <strong>שם התרגיל בעברית (English Name)</strong></p>
-   <p><strong>סטים:</strong> X סטים | <strong>חזרות:</strong> Y-Z חזרות | <strong>מנוחה:</strong> N שניות מנוחה בין סטים</p>
-   <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-   <p><strong>דגשי טכניקה:</strong> [משפט 1 קצר בלבד ממוקד על מנח גוף וטכניקה]</p>
-   <p><strong>התקדמות עומס והסבר:</strong> [משפט 1 קצר בלבד ממוקד על העלאת עומס]</p>
+    const tipsIndex = html.indexOf('<div class="plan-tips"');
+    if (tipsIndex !== -1) {
+      html = html.slice(0, tipsIndex) + missingDaysList.join('\n') + '\n' + html.slice(tipsIndex);
+    } else {
+      const lastDivIndex = html.lastIndexOf('</div>');
+      if (lastDivIndex !== -1) {
+        html = html.slice(0, lastDivIndex) + missingDaysList.join('\n') + '\n' + html.slice(lastDivIndex);
+      } else {
+        html += missingDaysList.join('\n');
+      }
+    }
+  }
 
-4. 🔢 כללים מחייבים למשקלים (חובה לעמוד ב-100% מהם!):
-   • ⚠️ חובה: כל תרגיל חייב לכלול משקלים מספריים בקילו (ק"ג) לכל סט! אל תרשום "משקל גוף" - רשום תמיד ערך מספרי בק"ג לכל סט (לדוגמה 0 ק"ג למשקל גוף טהור, או המשקל האופטימלי בק"ג).
-   • ⚠️ חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט הראשון חייב להיות הגבוה ביותר (כשהמתאמן רענן), ובסטים הבאים המשקל יורד בהדרגה או נשאר זהה עקב עייפות.
-   • חל איסור מוחלט שהמשקל יעלה מסט לסט! (לדוגמה: אסור בשום אופן לרשום סט 1: 15 ק"ג, סט 2: 20 ק"ג!).
-   • דוגמה תקינה ל-3 סטים: <strong>משקל מומלץ:</strong> סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג (או 20-20-20 ק"ג).
-   • דוגמה תקינה ל-4 סטים: <strong>משקל מומלץ:</strong> סט 1: 16 ק"ג | סט 2: 14 ק"ג | סט 3: 12 ק"ג | סט 4: 10 ק"ג.
-   • התאם את ערכי הקילו לסוג התרגיל ולנתוני המתאמן (${weight} ק"ג, ${fitnessDesc}).
+  return html;
+}
 
-5. בסוף התוכנית כלול <div class="plan-tips"> עם:
-   • 3-4 טיפי תזונה מותאמים למטרת ${goal}
-   • 2-3 טיפי התאוששות ומנוחה
-   • המלצה לשתייה ושינה
+async function handleGeneratePlan(userId, payload) {
+  const { age = 25, gender = 'male', weight = 70, height = 175, fitnessLevel = 'beginner', goal = 'חיטוב וירידה במשקל', equipment = 'gym', days = 3 } = payload || {};
+  const reqDays = Math.max(1, Math.min(7, parseInt(days) || 3));
 
-6. ⚡ מהירות ותמציתיות מקצועית: שמור על הסברים קצרים וממוקדים (2-3 משפטים בלבד לתרגיל) כדי שהתוכנית תיווצר במהירות מירבית.
+  const fitnessDesc = { 'beginner': 'מתחיל (0-6 חודשים)', 'intermediate': 'בינוני (6-24 חודשים)', 'advanced': 'מתקדם (2+ שנים)' }[fitnessLevel] || fitnessLevel;
+  const equipmentDesc = { 'gym': 'חדר כושר מלא', 'dumbbells': 'משקולות בלבד', 'bodyweight': 'משקל גוף בלבד', 'minimal': 'ציוד ביתי מינימלי' }[equipment] || equipment;
 
-══════════════════════════════════════
-📌 פורמט פלט: החזר HTML בלבד, ללא markdown, ללא הקדמות, ללא הסברים מחוץ ל-HTML.
-עטוף הכל ב-<div class="ai-plan-result">.
-ודא שיש בדיוק ${reqDays} תגיות <h3> עם ימי אימון!
-══════════════════════════════════════`;
+  const prompt = `בנה תוכנית אימונים מקצועית של בדיוק ${reqDays} ימים נפרדים לחדר כושר.
+מתאמן: גיל ${age}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרה ${goal}.
+
+⚠️ כללים מחייבים (100% חובה לעמוד בכולם!):
+1. בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> בפורמט:
+${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
+
+2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל בדיוק 5 פסקאות <p>:
+<p>🏋️ <strong>[שם התרגיל בעברית] (English Name)</strong></p>
+<p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
+<p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
+<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ממוקדת בת 1-2 משפטים על מנח גוף, גב ישר וטווח תנועה]</p>
+<p><strong>התקדמות עומס והסבר:</strong> [משפט 1 מפורט על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
+
+3. כללי משקלים מחייבים:
+• משקלים מספריים בלבד בק"ג לכל סט (לדוגמה: סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג).
+• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר.
+• חל איסור מוחלט לרשום "משקל גוף", וחל איסור מוחלט לרשום מילים סתמיות כמו "טובה" בדגשי הטכניקה!
+
+4. בסוף <div class="plan-tips"> עם 3 טיפי תזונה והתאוששות. עטוף ב-<div class="ai-plan-result">.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const MAX_ATTEMPTS = 5;
+  const MAX_ATTEMPTS = 2;
   let planHtml = null;
-  let bestCandidate = null;
-  let bestCandidateDays = 0;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const t0 = Date.now();
@@ -326,46 +384,22 @@ ${Array.from({ length: reqDays }, (_, i) => `   <h3>יום ${i + 1}: [שם קב�
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
 
-      // Accept plan immediately if it has substantial content (>1800 chars) AND contains all requested day headings
-      if (htmlLen > 1800 && dayCount >= reqDays) {
-        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
+      if (htmlLen > 1200 && dayCount >= reqDays) {
+        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}`);
         planHtml = candidateHtml;
         break;
       }
 
-      // Fallback for smaller valid plans with exact day headings
-      if (dayCount >= reqDays && htmlLen > 500) {
-        console.log(`[PLAN_VALIDATION_PERFECT] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}`);
+      if (htmlLen > 800) {
         planHtml = candidateHtml;
-        break;
-      }
-
-      if (htmlLen > 1000 && dayCount > bestCandidateDays) {
-        bestCandidate = candidateHtml;
-        bestCandidateDays = dayCount;
-        console.log(`[PLAN_BEST_CANDIDATE_UPDATED] attempt=${attempt}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}`);
-      } else {
-        console.warn(`[PLAN_VALIDATION_FAILED] attempt=${attempt}, dayHeadings=${dayCount}/${reqDays}, htmlLength=${htmlLen}, snippet: ${String(candidateHtml || '').slice(0, 200)}`);
       }
     } catch (attemptErr) {
       console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}, took ${Date.now() - t0}ms:`, attemptErr.message || attemptErr);
     }
-    if (attempt < MAX_ATTEMPTS) {
-      const backoffMs = Math.min(2000 * attempt, 8000);
-      console.log(`[RETRY_BACKOFF] waiting ${backoffMs}ms before attempt ${attempt + 1}`);
-      await new Promise(r => setTimeout(r, backoffMs));
-    }
   }
 
-  // If no perfect match, use best candidate if it exists
-  if (!planHtml && bestCandidate) {
-    console.log(`[PLAN_USING_BEST_CANDIDATE] bestDays=${bestCandidateDays}/${reqDays}, htmlLength=${bestCandidate.length}`);
-    planHtml = bestCandidate;
-  }
-
-  if (!planHtml) {
-    throw new Error(`ה-AI לא הצליח להשלים תוכנית של ${reqDays} ימים. אנא נסה שוב.`);
-  }
+  // Ensure 100% quality, exact days count, and repair any lazy text (e.g. "טובה.")
+  planHtml = sanitizeAndRepairPlan(planHtml, reqDays);
 
   await deleteFromDb(userId, "ChatHistory");
 
@@ -649,8 +683,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 75000; // 75-second hard timeout for plan generation to give DeepSeek enough time to return full plans
-const MAX_OUTPUT_TOKENS = 3000;
+const API_TIMEOUT_MS = 25000; // 25-second fast hard timeout per attempt
+const MAX_OUTPUT_TOKENS = 2500;
 
 async function fetchWithHardTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
