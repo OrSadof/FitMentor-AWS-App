@@ -640,17 +640,15 @@ function computeProgressSignals(trainingLogs) {
   };
 }
 
-const AI_MODELS = [
-  "google/gemini-2.5-flash",
-  "meta-llama/llama-3.3-70b-instruct",
-  "deepseek/deepseek-chat"
-];
+const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
+const API_TIMEOUT_MS = 120000; // 120-second timeout for DeepSeek V4 Flash to generate full 6-day plans
+const MAX_OUTPUT_TOKENS = 6000;
 
 async function tryGenerateContent(promptText, isChatCall = false) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
-    console.error("Missing OPENROUTER_API_KEY for AI execution.");
+    console.error("Missing OPENROUTER_API_KEY for DeepSeek execution.");
     if (isChatCall) {
       return JSON.stringify({
         reply: "מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
@@ -666,17 +664,18 @@ async function tryGenerateContent(promptText, isChatCall = false) {
 `.trim();
   }
 
+  const attempts = isChatCall ? 2 : 3;
+  const timeoutMs = isChatCall ? 25000 : API_TIMEOUT_MS;
+  const maxTokens = isChatCall ? 1200 : MAX_OUTPUT_TOKENS;
   let lastErr = null;
-  const maxTokens = isChatCall ? 1200 : 3500;
-  const timeoutMs = isChatCall ? 15000 : 35000;
 
-  for (const model of AI_MODELS) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     const t0 = Date.now();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      console.log(`[AI_CALL_START] model=${model}, isChatCall=${isChatCall}`);
+      console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, attempt=${attempt}/${attempts}, isChatCall=${isChatCall}`);
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         signal: controller.signal,
@@ -687,7 +686,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
           "X-Title": "FitMentor"
         },
         body: JSON.stringify({
-          model: model,
+          model: DEEPSEEK_MODEL,
           messages: [
             {
               role: "system",
@@ -706,26 +705,29 @@ async function tryGenerateContent(promptText, isChatCall = false) {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
-        console.warn(`[AI_CALL_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
-        throw new Error(`Model ${model} returned HTTP ${response.status}`);
+        console.warn(`[DEEPSEEK_HTTP_ERR] attempt=${attempt}, status=${response.status}: ${errText.slice(0, 150)}`);
+        throw new Error(`DeepSeek API returned HTTP ${response.status}`);
       }
 
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (typeof text === "string" && text.trim().length > 0) {
-        console.log(`[AI_CALL_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
+        console.log(`[DEEPSEEK_SUCCESS] attempt=${attempt}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
         return text;
       }
 
-      throw new Error(`Empty response returned from model ${model}.`);
+      throw new Error("Empty response returned from DeepSeek API.");
     } catch (err) {
       clearTimeout(timeoutId);
       lastErr = err;
-      console.warn(`[AI_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
+      console.warn(`[DEEPSEEK_FAILED] attempt=${attempt}/${attempts}, took ${Date.now() - t0}ms:`, err.message || err);
+      if (attempt < attempts) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
   }
 
-  // Handle final failure across all models
+  // Handle final failure
   if (!isChatCall) {
     throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
   }

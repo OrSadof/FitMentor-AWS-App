@@ -1346,12 +1346,12 @@ export function DashboardPage({ user }) {
         console.warn('generatePlan HTTP call cut off or timed out, continuing background DB polling...', genErr);
       }
 
-      // If initial response did not contain full plan, poll DB for up to 420 seconds (7 minutes)
+      // If initial response did not contain full plan, poll DB for up to 480 seconds (8 minutes)
       if (!finalPlanHtml) {
         console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
         const pollStartTime = Date.now();
 
-        while (Date.now() - pollStartTime < 420000) {
+        while (Date.now() - pollStartTime < 480000) {
           await new Promise(r => setTimeout(r, 4000));
           try {
             const checkRes = await fitmentorApi.getPlan(effectiveEmail);
