@@ -382,7 +382,8 @@ function normalizeUserDisplayName(name) {
   return cleaned.slice(0, 40);
 }
 
-async function handleChat(userId, { message, userName }) {
+async function handleChat(userId, payload) {
+  const { message, userName, sessions: inputSessions, activeSessionId: inputActiveSessionId } = payload || {};
   const planData = await getFromDb(userId, "Plan");
   const chatData = await getFromDb(userId, "ChatHistory");
 
@@ -526,9 +527,9 @@ async function handleChat(userId, { message, userName }) {
   const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
   const aiMsgObj = { role: "ai", text: parsedResponse.reply, timestamp: Date.now() };
 
-  let updatedSessions = Array.isArray(payload?.sessions) ? [...payload.sessions] : null;
+  let updatedSessions = Array.isArray(inputSessions) ? [...inputSessions] : null;
   if (updatedSessions && updatedSessions.length > 0) {
-    const activeId = payload.activeSessionId || updatedSessions[0].id;
+    const activeId = inputActiveSessionId || updatedSessions[0].id;
     const activeIdx = updatedSessions.findIndex(s => s.id === activeId);
     const targetIdx = activeIdx >= 0 ? activeIdx : 0;
     const targetSession = updatedSessions[targetIdx];
