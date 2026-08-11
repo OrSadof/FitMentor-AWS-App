@@ -251,14 +251,15 @@ async function handleGeneratePlan(userId, payload) {
 1. בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> בפורמט:
 ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
 
-2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל בדיוק 5 פסקאות <p>:
+2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל חובה בדיוק 5 פסקאות <p> (חובה לכלול דגשי טכניקה לכל תרגיל ותרגיל!):
 <p>🏋️ <strong>[שם התרגיל בעברית] (English Name)</strong></p>
 <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
 <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ועשירה בת 2 משפטים על מנח גוף, גב ישר, נשימה וטווח תנועה]</p>
+<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ועשירה בת 2 משפטים על מנח גוף, גב ישר, נשימה וטווח תנועה - חובה לכל תרגיל!]</p>
 <p><strong>התקדמות עומס והסבר:</strong> [משפט 1-2 מפורט על אופן העלאת משקלי העבודה]</p>
 
 3. כללי איכות ומשקלים מחייבים:
+• חל איסור מוחלט להשמיט את פסקאות "דגשי טכניקה"! חובה שלכל תרגיל ותרגיל בתוכנית תהיה פסקה המתחילה ב-<strong>דגשי טכניקה:</strong>!
 • חל איסור מוחלט על תשובות עצלניות של מילה אחת כמו "מושלמת.", "טובה.", "נכון" או "מעולה" בדגשי הטכניקה!
 • חל איסור מוחלט על משקלים לא הגיוניים כמו 0 ק"ג, 0.5 ק"ג, 1 ק"ג, או רצפים כמו 0,0,1!
 • לכל תרגיל טעון (חדר כושר/משקולות) חובה לתת משקלי עבודה הגיוניים וריאליסטיים בק"ג המתאימים למשקל המתאמן (${weight} ק"ג).
@@ -333,20 +334,17 @@ function normalizeUserDisplayName(name) {
 async function handleChat(userId, payload) {
   const { message, userName, sessions: inputSessions, activeSessionId: inputActiveSessionId } = payload || {};
   const planData = await getFromDb(userId, "Plan");
+  const chatData = await getFromDb(userId, "ChatHistory");
+
   const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
   const historyContext = buildPlanHistoryPromptContext(history);
 
   const trainingLogsResult = await handleGetTrainingLogs(userId);
+  const trainingLogs = trainingLogsResult?.logs || [];
   const displayName = normalizeUserDisplayName(userName);
 
-  if (trainingLogsResult.error) {
-    return {
-      reply:
-        `אני לא מצליח לגשת ליומן האימונים ב-DynamoDB כרגע.\n` +
-        `שגיאה: ${trainingLogsResult.error}\n\n` +
-        `בדוק בבקשה את ההרשאות (DynamoDB Query) ואת מבנה הטבלה.`,
-      updatedPlanHtml: null
-    };
+  if (trainingLogsResult?.error) {
+    console.warn('[HANDLE_CHAT_LOGS_WARN]', trainingLogsResult.error);
   }
 
   let messages = chatData?.messages || [];

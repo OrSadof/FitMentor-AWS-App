@@ -144,7 +144,15 @@ function parseExercisesFromContent(rawContent) {
     !line.includes('העלה') && !line.includes('כשתבצע') && !line.includes('כשאתה') && !line.includes('טכניקה');
 
   const isWeightLine = (line) => line.includes('משקל') || /^weight/i.test(line);
-  const isTechLine = (line) => line.includes('דגש') || line.includes('טכניקה') || line.includes('איך מבצעים') || line.includes('ביצוע');
+  const isTechLine = (line) =>
+    line.includes('דגש') ||
+    line.includes('טכניקה') ||
+    line.includes('איך מבצעים') ||
+    line.includes('ביצוע') ||
+    line.includes('דגשים') ||
+    line.includes('הנחיות') ||
+    line.includes('מנח');
+
   const isProgLine = (line) => line.includes('התקדמות') || line.includes('עומס') || line.includes('הסבר');
 
   const isDetailLine = (line) =>
@@ -284,7 +292,7 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (isTechLine(line)) {
-      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש)\s*[:\-–—]?\s*/i, '').trim();
+      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש|הנחיות|מנח)\s*[:\-–—]?\s*/i, '').trim();
       return;
     }
 
@@ -322,6 +330,14 @@ function parseExercisesFromContent(rawContent) {
     } else if (ex.setWeights && ex.setWeights.length === 2) {
       const w2 = ex.setWeights[1];
       ex.setWeights.push(Math.max(1, Math.round(w2 * 0.85 * 10) / 10));
+    }
+
+    if (!ex.technique || ex.technique.trim().length === 0) {
+      if (ex.extraDetails && ex.extraDetails.length > 0) {
+        ex.technique = ex.extraDetails.shift();
+      } else {
+        ex.technique = 'שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.';
+      }
     }
   });
 
