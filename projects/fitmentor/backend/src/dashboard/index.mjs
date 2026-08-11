@@ -223,121 +223,15 @@ async function handleGetTrainingLogs(userId) {
   }
 }
 
-async function handleGeneratePlan(userId, payload) {
-  const { age, goal, days, equipment, weight, height, gender, fitnessLevel } = payload;
-  const reqDays = Math.max(1, parseInt(days, 10) || 3);
-
-  const history = await getPlanHistory(userId, MAX_PLAN_HISTORY_TO_FETCH);
-  const historyContext = buildPlanHistoryPromptContext(history);
-
-  // Build equipment description in Hebrew
-  const equipmentMap = {
-    'gym': 'חדר כושר מלא (מכונות, משקולות חופשיות, מוטות, כבלים)',
-    'home_dumbbells': 'משקולות יד בבית (דמבלים)',
-    'bodyweight': 'משקל גוף בלבד (ללא ציוד)'
-  };
-  const equipmentDesc = equipmentMap[equipment] || equipment;
-
-  // Build fitness level description
-  const fitnessMap = {
-    'beginner': 'מתחיל (0-6 חודשי ניסיון)',
-    'intermediate': 'מתקדם (6 חודשים עד שנתיים)',
-    'advanced': 'מקצועי (מעל שנתיים ניסיון)'
-  };
-  const fitnessDesc = fitnessMap[fitnessLevel] || fitnessLevel;
-
-  // Build goal-specific coaching guidance
-  const goalGuidance = {
-    'חיטוב וירידה במשקל': 'עדיפות לתרגילים מורכבים (compound) ששורפים קלוריות רבות, סופרסטים, דגש על טמפו מהיר ומנוחות קצרות (30-60 שניות). שלב אלמנטים אירוביים כמו בורפיז, קפיצות או ריצה.',
-    'עלייה במסת שריר': 'דגש על היפרטרופיה: 3-4 סטים של 8-12 חזרות, מנוחות של 60-90 שניות, עומסים מתונים-כבדים. שלב תרגילים מבודדים לצד מורכבים. TUT (Time Under Tension) של 40-60 שניות לסט.',
-    'שיפור כושר כללי': 'שילוב מגוון: כוח, סיבולת לב-ריאה, גמישות. תרגילים פונקציונליים, מעגלי אימון (circuits), אירובי בעצימות משתנה (HIIT). מנוחות של 30-60 שניות.',
-    'אימוני כוח': 'עדיפות לתרגילי כוח בסיסיים: סקוואט, דדליפט, לחיצת חזה, לחיצת כתפיים. 4-5 סטים של 3-6 חזרות בעומס כבד. מנוחות ארוכות (2-4 דקות). דגש על פרוגרסיה לינארית.'
-  };
-  const goalCoaching = goalGuidance[goal] || '';
-
 function sanitizeAndRepairPlan(rawHtml, reqDays) {
   let html = String(rawHtml || '').trim();
 
-  // 1. Repair lazy 1-word technique focus strings (e.g., "טובה.", "טובה", "נכון", "טוב")
-  html = html.replace(
-    /(<p>[^<]*<strong>(?:דגשי?\s*טכניקה|איך מבצעים(?: ודגשי טכניקה)?)\s*[:\-–—]?\s*<\/strong>)\s*(?:טובה|טוב|נכון|תקין|מפתח|מעולה|טובה\.)(?:\s*<\/p>|\.)/gi,
-    '$1 שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.</p>'
-  );
-  html = html.replace(
-    /<strong>(?:דגשי?\s*טכניקה|איך מבצעים(?: ודגשי טכניקה)?)\s*[:\-–—]?\s*<\/strong>\s*(?:טובה|טוב|נכון|תקין|מפתח|מעולה|טובה\.)(?:\s*<\/p>|\.)/gi,
-    '<strong>דגשי טכניקה:</strong> שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.'
-  );
+  // 0. Clean trailing unclosed HTML tags if truncated at token limit
+  html = html.replace(/<[^>]*$/g, '').trim();
 
-  // 2. Ensure wrapper exists
+  // 1. Ensure wrapper exists
   if (!html.includes('ai-plan-result')) {
     html = `<div class="ai-plan-result">\n${html}\n</div>`;
-  }
-
-  // 3. Ensure exact required day headings exist
-  let currentHeadings = countDayHeadings(html);
-  if (currentHeadings < reqDays) {
-    console.warn(`[PLAN_REPAIR] Current headings (${currentHeadings}) < requested (${reqDays}). Injecting missing days...`);
-
-    const missingDaysList = [];
-    const dayTemplates = [
-      {
-        title: "אימון פלג גוף עליון וליבה (Upper Body & Core)",
-        exs: [
-          { name: "לחיצת חזה עם משקולות (Dumbbell Bench Press)", w: [20, 17.5, 15], tech: "לחץ את השכמות לספסל, הורד את המשקולות בשליטה עד לגובה החזה ודחף כלפי מעלה." },
-          { name: "חתירה במכונה / פולי (Seated Cable Row)", w: [25, 22.5, 20], tech: "שמור על גב זקוף, משוך את הידיות לכיוון הטבור והדק את השכמות בסוף התנועה." },
-          { name: "פלאנק סטטי (Plank Hold)", w: [0, 0, 0], tech: "כווץ את הבטן והישבן, שמור על גוף בקו ישר ללא שקיעת האגן למשך 45-60 שניות." }
-        ]
-      },
-      {
-        title: "אימון פלג גוף תחתון ואירובי (Lower Body & HIIT)",
-        exs: [
-          { name: "סקוואט עם משקולת (Goblet Squat)", w: [18, 16, 14], tech: "החזק את המשקולת צמוד לחזה, רד בעקבים עד לזווית 90 מעלות ודחף חזרה למעלה." },
-          { name: "מכרעים בהליכה (Walking Lunges)", w: [12, 10, 8], tech: "צעד קדימה בגב זקוף, הורד את הברך האחורית כמעט עד לרצפה ודחף מהרגל הקדמית." },
-          { name: "בורפיז מבוקרים (Burpees)", w: [0, 0, 0], tech: "רד לגלגל ירידה לקרקע, קפוץ חזרה לעמידה עם ניתור קל ושמור על בקרה מלאה." }
-        ]
-      },
-      {
-        title: "אימון זריזות, כתפיים וזרועות (Shoulders & Arms)",
-        exs: [
-          { name: "לחיצת כתפיים בישיבה (Dumbbell Shoulder Press)", w: [14, 12, 10], tech: "שמור על גב צמוד למשענת, דחף את המשקולות מעל הראש והורד לאט לגובה האוזניים." },
-          { name: "כפילת מרפקים בעמידה (Bicep Dumbbell Curls)", w: [12, 10, 8], tech: "הצמד מרפקים לצדי הגוף, הרם את המשקולות ללא נדנוד הגב והורד בשליטה מלאה." },
-          { name: "פשוט מרפקים בפולי עליון (Tricep Cable Pushdown)", w: [20, 17.5, 15], tech: "קבע מרפקים לצדי החזה, פשוט את הזרועות כלפי מטה עד לנעילה מבוקרת." }
-        ]
-      },
-      {
-        title: "אימון נפח כולל והתאוששות אקטיבית (Full Body Mobility)",
-        exs: [
-          { name: "דדליפט רומני עם משקולות (RDL Dumbbell)", w: [22, 20, 17.5], tech: "הטה את האגן לאחור בגב ישר לחלוטין, הורד את המשקולות לאורך השוקיים ועלה בכיווץ ישבן." },
-          { name: "פולי עליון באחיזה רחבה (Lat Pulldown)", w: [30, 27.5, 25], tech: "משוך את הבר לחזה העליון תוך הידוק השכמות והורדה איטית של המשקל." },
-          { name: "שקע סמך קפיצה (Jumping Jacks & Core)", w: [0, 0, 0], tech: "בצע תנועה רציפה של ניתור ופתיחת ידיים לשמירה על דופק גבוה במשך 60 שניות." }
-        ]
-      }
-    ];
-
-    for (let dayNum = currentHeadings + 1; dayNum <= reqDays; dayNum++) {
-      const template = dayTemplates[(dayNum - 1) % dayTemplates.length];
-      let dayHtml = `\n<h3>יום ${dayNum}: ${template.title}</h3>\n`;
-      template.exs.forEach(ex => {
-        dayHtml += `<p>🏋️ <strong>${ex.name}</strong></p>\n`;
-        dayHtml += `<p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 10-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>\n`;
-        dayHtml += `<p><strong>משקל מומלץ:</strong> סט 1: ${ex.w[0]} ק"ג | סט 2: ${ex.w[1]} ק"ג | סט 3: ${ex.w[2]} ק"ג</p>\n`;
-        dayHtml += `<p><strong>דגשי טכניקה:</strong> ${ex.tech}</p>\n`;
-        dayHtml += `<p><strong>התקדמות עומס והסבר:</strong> הגדל משקל ב-2.5 ק"ג ברגע שאתה מצליח לבצע את כל הסטים בטווח החזרות העליון בטכניקה נקייה.</p>\n`;
-      });
-      missingDaysList.push(dayHtml);
-    }
-
-    const tipsIndex = html.indexOf('<div class="plan-tips"');
-    if (tipsIndex !== -1) {
-      html = html.slice(0, tipsIndex) + missingDaysList.join('\n') + '\n' + html.slice(tipsIndex);
-    } else {
-      const lastDivIndex = html.lastIndexOf('</div>');
-      if (lastDivIndex !== -1) {
-        html = html.slice(0, lastDivIndex) + missingDaysList.join('\n') + '\n' + html.slice(lastDivIndex);
-      } else {
-        html += missingDaysList.join('\n');
-      }
-    }
   }
 
   return html;
@@ -350,7 +244,7 @@ async function handleGeneratePlan(userId, payload) {
   const fitnessDesc = { 'beginner': 'מתחיל (0-6 חודשים)', 'intermediate': 'בינוני (6-24 חודשים)', 'advanced': 'מתקדם (2+ שנים)' }[fitnessLevel] || fitnessLevel;
   const equipmentDesc = { 'gym': 'חדר כושר מלא', 'dumbbells': 'משקולות בלבד', 'bodyweight': 'משקל גוף בלבד', 'minimal': 'ציוד ביתי מינימלי' }[equipment] || equipment;
 
-  const prompt = `בנה תוכנית אימונים מקצועית של בדיוק ${reqDays} ימים נפרדים לחדר כושר.
+  const prompt = `חובה מוחלטת: צור תוכנית אימונים 100% מלאה של בדיוק ${reqDays} ימים נפרדים מתוך ה-API!
 מתאמן: גיל ${age}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרה ${goal}.
 
 ⚠️ כללים מחייבים (100% חובה לעמוד בכולם!):
@@ -361,18 +255,19 @@ ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצ
 <p>🏋️ <strong>[שם התרגיל בעברית] (English Name)</strong></p>
 <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
 <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ממוקדת בת 1-2 משפטים על מנח גוף, גב ישר וטווח תנועה]</p>
-<p><strong>התקדמות עומס והסבר:</strong> [משפט 1 מפורט על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
+<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ועשירה בת 2 משפטים על מנח גוף, גב ישר, נשימה וטווח תנועה]</p>
+<p><strong>התקדמות עומס והסבר:</strong> [משפט 1-2 מפורט על אופן העלאת משקלי העבודה]</p>
 
-3. כללי משקלים מחייבים:
-• משקלים מספריים בלבד בק"ג לכל סט (לדוגמה: סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג).
-• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר.
-• חל איסור מוחלט לרשום "משקל גוף", וחל איסור מוחלט לרשום מילים סתמיות כמו "טובה" בדגשי הטכניקה!
+3. כללי איכות ומשקלים מחייבים:
+• חל איסור מוחלט על תשובות עצלניות של מילה אחת כמו "מושלמת.", "טובה.", "נכון" או "מעולה" בדגשי הטכניקה!
+• חל איסור מוחלט על משקלים לא הגיוניים כמו 0 ק"ג, 0.5 ק"ג, 1 ק"ג, או רצפים כמו 0,0,1!
+• לכל תרגיל טעון (חדר כושר/משקולות) חובה לתת משקלי עבודה הגיוניים וריאליסטיים בק"ג המתאימים למשקל המתאמן (${weight} ק"ג).
+• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר (למשל: סט 1: 40 ק"ג | סט 2: 35 ק"ג | סט 3: 30 ק"ג).
 
 4. בסוף <div class="plan-tips"> עם 3 טיפי תזונה והתאוששות. עטוף ב-<div class="ai-plan-result">.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const MAX_ATTEMPTS = 2;
+  const MAX_ATTEMPTS = 3;
   let planHtml = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -390,15 +285,34 @@ ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצ
         break;
       }
 
-      if (htmlLen > 800) {
+      if (htmlLen > 800 && dayCount > 0) {
         planHtml = candidateHtml;
+        break;
       }
     } catch (attemptErr) {
       console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}, took ${Date.now() - t0}ms:`, attemptErr.message || attemptErr);
     }
   }
 
-  // Ensure 100% quality, exact days count, and repair any lazy text (e.g. "טובה.")
+  if (planHtml && countDayHeadings(planHtml) < reqDays) {
+    const currentDays = countDayHeadings(planHtml);
+    console.warn(`[PLAN_EXTENSION_API_CALL] API generated ${currentDays}/${reqDays} days. Requesting API completion for remaining days...`);
+    const missingPrompt = `תוכנית האימונים שנבנתה עד כה מה-API כוללת ${currentDays} ימים out of ${reqDays}.\nבנה מה-API בלבד את הימים החסרים (יום ${currentDays + 1} עד יום ${reqDays}).\nלכל יום כותרת <h3>יום X: ...</h3> ו-3 תרגילים עם 5 פסקאות <p> כנדרש בפורמט HTML. החזר רק את ימים ${currentDays + 1} עד ${reqDays}!`;
+    try {
+      const extraDaysHtml = await tryGenerateContent(missingPrompt, false);
+      if (extraDaysHtml && extraDaysHtml.length > 300) {
+        const tipsIdx = planHtml.indexOf('<div class="plan-tips"');
+        if (tipsIdx !== -1) {
+          planHtml = planHtml.slice(0, tipsIdx) + '\n' + extraDaysHtml + '\n' + planHtml.slice(tipsIdx);
+        } else {
+          planHtml += '\n' + extraDaysHtml;
+        }
+      }
+    } catch (e) {
+      console.error('[PLAN_EXTENSION_ERR]', e.message);
+    }
+  }
+
   planHtml = sanitizeAndRepairPlan(planHtml, reqDays);
 
   await deleteFromDb(userId, "ChatHistory");
@@ -425,11 +339,6 @@ async function handleChat(userId, payload) {
   const historyContext = buildPlanHistoryPromptContext(history);
 
   const trainingLogsResult = await handleGetTrainingLogs(userId);
-  const trainingLogs = trainingLogsResult.logs || [];
-
-  const progress = computeProgressSignals(trainingLogs);
-  const planParamsContext = planData?.params ? JSON.stringify(planData.params) : "אין פרטים שמורים.";
-
   const displayName = normalizeUserDisplayName(userName);
 
   if (trainingLogsResult.error) {
@@ -682,9 +591,14 @@ function computeProgressSignals(trainingLogs) {
   };
 }
 
-const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
-const API_TIMEOUT_MS = 25000; // 25-second fast hard timeout per attempt
-const MAX_OUTPUT_TOKENS = 2500;
+const FAST_AI_MODELS = [
+  "google/gemini-2.5-flash-lite",
+  "openai/gpt-4o-mini",
+  "google/gemini-2.5-flash",
+  "deepseek/deepseek-v4-flash-0731"
+];
+const API_TIMEOUT_MS = 25000;
+const MAX_OUTPUT_TOKENS = 4500;
 
 async function fetchWithHardTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -715,7 +629,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
-    console.error("Missing OPENROUTER_API_KEY for DeepSeek execution.");
+    console.error("Missing OPENROUTER_API_KEY for AI execution.");
     if (isChatCall) {
       return JSON.stringify({
         reply: "מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
@@ -731,16 +645,17 @@ async function tryGenerateContent(promptText, isChatCall = false) {
 `.trim();
   }
 
-  const attempts = isChatCall ? 2 : 3;
-  const timeoutMs = isChatCall ? 18000 : API_TIMEOUT_MS;
+  const timeoutMs = isChatCall ? 12000 : 25000;
   const maxTokens = isChatCall ? 1200 : MAX_OUTPUT_TOKENS;
+  const modelsToTry = isChatCall ? ["google/gemini-2.5-flash-lite", "openai/gpt-4o-mini"] : FAST_AI_MODELS;
   let lastErr = null;
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  for (let idx = 0; idx < modelsToTry.length; idx++) {
+    const model = modelsToTry[idx];
     const t0 = Date.now();
 
     try {
-      console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, attempt=${attempt}/${attempts}, isChatCall=${isChatCall}`);
+      console.log(`[AI_CALL_START] model=${model}, isChatCall=${isChatCall}`);
       const response = await fetchWithHardTimeout("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -750,41 +665,38 @@ async function tryGenerateContent(promptText, isChatCall = false) {
           "X-Title": "FitMentor"
         },
         body: JSON.stringify({
-          model: DEEPSEEK_MODEL,
+          model,
           messages: [
             {
               role: "system",
               content: isChatCall
                 ? "You are FitMentor AI, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON."
-                : "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never increase weights across sets (e.g. NEVER output 15kg then 20kg). Always provide numerical kg values for every set of every exercise (never output 'משקל גוף'). Return complete, concise, rich HTML for the workout plan."
+                : "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never output illogical weights like 0kg, 0.5kg, 1kg or 0,0,1 sequences for loaded exercises. Always provide realistic numerical kg values for every set of every loaded exercise. Return complete, concise, rich HTML for the workout plan."
             },
             { role: "user", content: promptText }
           ],
           max_tokens: maxTokens,
-          temperature: 0.5
+          temperature: 0.4
         })
       }, timeoutMs);
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
-        console.warn(`[DEEPSEEK_HTTP_ERR] attempt=${attempt}, status=${response.status}: ${errText.slice(0, 150)}`);
-        throw new Error(`DeepSeek API returned HTTP ${response.status}`);
+        console.warn(`[AI_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
+        throw new Error(`AI API returned HTTP ${response.status} for ${model}`);
       }
 
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (typeof text === "string" && text.trim().length > 0) {
-        console.log(`[DEEPSEEK_SUCCESS] attempt=${attempt}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
+        console.log(`[AI_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
         return text;
       }
 
-      throw new Error("Empty response returned from DeepSeek API.");
+      throw new Error(`Empty response returned from model ${model}`);
     } catch (err) {
       lastErr = err;
-      console.warn(`[DEEPSEEK_FAILED] attempt=${attempt}/${attempts}, took ${Date.now() - t0}ms:`, err.message || err);
-      if (attempt < attempts) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
+      console.warn(`[AI_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
     }
   }
 

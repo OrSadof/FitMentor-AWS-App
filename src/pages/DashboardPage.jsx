@@ -1290,6 +1290,193 @@ function PlanBuilderForm({ generating, onSubmit, onCancel }) {
 /* ═══════════════════════════════════════════════ */
 /* ─── MAIN DASHBOARD PAGE ─── */
 /* ═══════════════════════════════════════════════ */
+function serializeDaysToHtml(days, intro, tips) {
+  let html = '<div class="ai-plan-result">\n';
+  if (intro) {
+    html += `${intro}\n\n`;
+  }
+
+  (days || []).forEach((day) => {
+    html += `<h3>${day.title}</h3>\n`;
+    (day.exercises || []).forEach((ex) => {
+      html += `<p>🏋️ <strong>${ex.title}</strong></p>\n`;
+
+      const stats = [];
+      if (ex.setsCount) stats.push(`<strong>סטים:</strong> ${ex.setsCount}`);
+      if (ex.repsVal) stats.push(`<strong>חזרות:</strong> ${ex.repsVal}`);
+      if (ex.restVal) stats.push(`<strong>מנוחה:</strong> ${ex.restVal}`);
+      if (stats.length > 0) {
+        html += `<p>${stats.join(' | ')}</p>\n`;
+      }
+
+      if (Array.isArray(ex.setWeights) && ex.setWeights.length > 0) {
+        const setStr = ex.setWeights.map((w, idx) => `סט ${idx + 1}: ${w} ק"ג`).join(' | ');
+        html += `<p><strong>משקל מומלץ:</strong> ${setStr}</p>\n`;
+      } else if (ex.weightText) {
+        html += `<p><strong>משקל מומלץ:</strong> ${ex.weightText}</p>\n`;
+      }
+
+      if (ex.technique) {
+        html += `<p><strong>דגשי טכניקה:</strong> ${ex.technique}</p>\n`;
+      }
+      if (ex.progression) {
+        html += `<p><strong>התקדמות עומס והסבר:</strong> ${ex.progression}</p>\n`;
+      }
+      if (Array.isArray(ex.extraDetails) && ex.extraDetails.length > 0) {
+        ex.extraDetails.forEach(det => {
+          if (det) html += `<p>${det}</p>\n`;
+        });
+      }
+      html += '\n';
+    });
+  });
+
+  if (tips) {
+    html += `<div class="plan-tips">\n${tips}\n</div>\n`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight, onAddSet, onRemoveSet, onRemoveEx }) {
+  return (
+    <div className="editable-ex-card">
+      <div className="editable-ex-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+          <span style={{ fontSize: '1.2rem' }}>🏋️</span>
+          <input
+            type="text"
+            className="editable-ex-title-input"
+            value={ex.title}
+            onChange={(e) => onUpdateField(dIdx, eIdx, 'title', e.target.value)}
+            placeholder="שם התרגיל"
+          />
+        </div>
+        <button type="button" className="btn-remove-ex" onClick={() => onRemoveEx(dIdx, eIdx)}>
+          🗑️ הסר תרגיל
+        </button>
+      </div>
+
+      <div className="editable-ex-badges-grid">
+        <div className="editable-badge-field">
+          <label className="editable-badge-label">סטים:</label>
+          <input
+            type="text"
+            className="editable-badge-input"
+            value={ex.setsCount}
+            onChange={(e) => onUpdateField(dIdx, eIdx, 'setsCount', e.target.value)}
+          />
+        </div>
+        <div className="editable-badge-field">
+          <label className="editable-badge-label">חזרות:</label>
+          <input
+            type="text"
+            className="editable-badge-input"
+            value={ex.repsVal}
+            onChange={(e) => onUpdateField(dIdx, eIdx, 'repsVal', e.target.value)}
+          />
+        </div>
+        <div className="editable-badge-field">
+          <label className="editable-badge-label">מנוחה:</label>
+          <input
+            type="text"
+            className="editable-badge-input"
+            value={ex.restVal}
+            onChange={(e) => onUpdateField(dIdx, eIdx, 'restVal', e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="editable-weights-box">
+        <div className="editable-weights-header">
+          <span>🏋️ משקלי עבודה מומלצים לפי סטים (ק"ג):</span>
+        </div>
+        <div className="editable-sets-row">
+          {ex.setWeights.map((w, sIdx) => (
+            <div key={sIdx} className="editable-set-item">
+              <span>סט {sIdx + 1}:</span>
+              <input
+                type="number"
+                step="0.5"
+                className="editable-weight-input"
+                value={w}
+                onChange={(e) => onUpdateWeight(dIdx, eIdx, sIdx, e.target.value)}
+              />
+              <span>ק"ג</span>
+            </div>
+          ))}
+          <button type="button" className="btn-set-action" onClick={() => onAddSet(dIdx, eIdx)}>
+            ➕ הוסף סט
+          </button>
+          {ex.setWeights.length > 1 && (
+            <button type="button" className="btn-set-action" onClick={() => onRemoveSet(dIdx, eIdx)}>
+              🗑️ הסר סט
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="editable-text-group">
+        <label className="editable-text-label">🎯 דגש טכניקה:</label>
+        <textarea
+          className="editable-textarea"
+          value={ex.technique}
+          onChange={(e) => onUpdateField(dIdx, eIdx, 'technique', e.target.value)}
+          placeholder="דגשי טכניקה..."
+        />
+      </div>
+
+      <div className="editable-text-group">
+        <label className="editable-text-label">📈 התקדמות עומס:</label>
+        <textarea
+          className="editable-textarea"
+          value={ex.progression}
+          onChange={(e) => onUpdateField(dIdx, eIdx, 'progression', e.target.value)}
+          placeholder="הנחיות עומס פרוגרסיבי..."
+        />
+      </div>
+    </div>
+  );
+}
+
+function EditableDayCard({ day, dIdx, isOpen, onToggle, onUpdateField, onUpdateWeight, onAddSet, onRemoveSet, onRemoveEx, onAddEx }) {
+  const dayIcons = ['🏋️', '💪', '🔥', '⚡', '🎯', '🚀', '🌟'];
+  const icon = dayIcons[dIdx % dayIcons.length];
+
+  return (
+    <div className="plan-day-card" data-open={isOpen} style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
+      <button className="plan-day-header" onClick={onToggle} type="button">
+        <div className="plan-day-header-left">
+          <span className="plan-day-icon">{icon}</span>
+          <span className="plan-day-title">{day.title}</span>
+        </div>
+        <span className={`plan-day-chevron ${isOpen ? 'open' : ''}`}>‹</span>
+      </button>
+
+      {isOpen && (
+        <div className="plan-day-body">
+          {day.exercises.map((ex, eIdx) => (
+            <EditableExerciseCard
+              key={eIdx}
+              ex={ex}
+              dIdx={dIdx}
+              eIdx={eIdx}
+              onUpdateField={onUpdateField}
+              onUpdateWeight={onUpdateWeight}
+              onAddSet={onAddSet}
+              onRemoveSet={onRemoveSet}
+              onRemoveEx={onRemoveEx}
+            />
+          ))}
+          <button type="button" className="btn-add-ex-day" onClick={() => onAddEx(dIdx)}>
+            ➕ הוסף תרגיל חדש ליום זה
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DashboardPage({ user }) {
   const effectiveEmail = user?.email || localStorage.getItem('fitmentor_userId') || '';
   const effectiveName = user?.name || user?.displayName || localStorage.getItem('fitmentor_displayName') || 'מתאמן';
@@ -1302,6 +1489,11 @@ export function DashboardPage({ user }) {
   const [showNewPlanModal, setShowNewPlanModal] = useState(false);
   const [openDayIndices, setOpenDayIndices] = useState({});
   const modalMouseDownRef = useRef(false);
+
+  // Editable plan states
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [editableDays, setEditableDays] = useState([]);
+  const [savingEdits, setSavingEdits] = useState(false);
 
   // AI Chat state
   const [chatMessages, setChatMessages] = useState([]);
@@ -1338,6 +1530,123 @@ export function DashboardPage({ user }) {
       } catch (e) { }
       setLoadingPlan(false);
     }
+  };
+
+  const startEditingPlan = () => {
+    const parsed = parsePlanIntoDays(cleanPlanHtml(planHtml));
+    const daysWithStructuredExercises = (parsed.days || []).map(day => ({
+      title: day.title,
+      exercises: parseExercisesFromContent(day.content).map(ex => {
+        const sBadge = ex.statsBadges?.find(b => b.label === 'סטים');
+        const rBadge = ex.statsBadges?.find(b => b.label === 'חזרות');
+        const mBadge = ex.statsBadges?.find(b => b.label === 'מנוחה');
+        return {
+          title: ex.title,
+          setsCount: sBadge ? sBadge.val : '3 סטים',
+          repsVal: rBadge ? rBadge.val : '8-12 חזרות',
+          restVal: mBadge ? mBadge.val : '60 שניות',
+          setWeights: Array.isArray(ex.setWeights) && ex.setWeights.length > 0 ? [...ex.setWeights] : [20, 17.5, 15],
+          weightText: ex.weightText || '',
+          technique: ex.technique || '',
+          progression: ex.progression || '',
+          extraDetails: Array.isArray(ex.extraDetails) ? [...ex.extraDetails] : []
+        };
+      })
+    }));
+    setEditableDays(daysWithStructuredExercises);
+    setIsEditingPlan(true);
+    const allOpen = {};
+    (parsed.days || []).forEach((_, i) => { allOpen[i] = true; });
+    setOpenDayIndices(allOpen);
+  };
+
+  const handleSavePlanEdits = async () => {
+    setSavingEdits(true);
+    try {
+      const parsed = parsePlanIntoDays(cleanPlanHtml(planHtml));
+      const newHtml = serializeDaysToHtml(editableDays, parsed.intro, null);
+      await fitmentorApi.savePlan(effectiveEmail, newHtml, planParams);
+      setPlanHtml(newHtml);
+      setIsEditingPlan(false);
+    } catch (err) {
+      console.error('Error saving plan edits:', err);
+      alert('שגיאה בשמירת השינויים בתוכנית. אנא נסה שוב.');
+    } finally {
+      setSavingEdits(false);
+    }
+  };
+
+  const handleCancelPlanEdits = () => {
+    setIsEditingPlan(false);
+    setEditableDays([]);
+  };
+
+  const updateExerciseField = (dIdx, eIdx, field, val) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      copy[dIdx].exercises[eIdx][field] = val;
+      return copy;
+    });
+  };
+
+  const updateSetWeight = (dIdx, eIdx, setIdx, val) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      const num = Number(val);
+      copy[dIdx].exercises[eIdx].setWeights[setIdx] = isNaN(num) ? 0 : num;
+      return copy;
+    });
+  };
+
+  const addSetToExercise = (dIdx, eIdx) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      const ex = copy[dIdx].exercises[eIdx];
+      const lastW = ex.setWeights.length > 0 ? ex.setWeights[ex.setWeights.length - 1] : 15;
+      ex.setWeights.push(Math.max(1, Math.round(lastW * 0.85 * 10) / 10));
+      const sNum = ex.setWeights.length;
+      ex.setsCount = `${sNum} סטים`;
+      return copy;
+    });
+  };
+
+  const removeSetFromExercise = (dIdx, eIdx) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      const ex = copy[dIdx].exercises[eIdx];
+      if (ex.setWeights.length > 1) {
+        ex.setWeights.pop();
+        const sNum = ex.setWeights.length;
+        ex.setsCount = `${sNum} סטים`;
+      }
+      return copy;
+    });
+  };
+
+  const addExerciseToDay = (dIdx) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      copy[dIdx].exercises.push({
+        title: 'תרגיל חדש',
+        setsCount: '3 סטים',
+        repsVal: '8-12 חזרות',
+        restVal: '60 שניות',
+        setWeights: [25, 22.5, 20],
+        weightText: '',
+        technique: 'שמור על גב ישר וטווח תנועה מלא.',
+        progression: 'העלה עומס באופן מדורג.',
+        extraDetails: []
+      });
+      return copy;
+    });
+  };
+
+  const removeExerciseFromDay = (dIdx, eIdx) => {
+    setEditableDays(prev => {
+      const copy = JSON.parse(JSON.stringify(prev));
+      copy[dIdx].exercises.splice(eIdx, 1);
+      return copy;
+    });
   };
 
   const loadChatHistory = async () => {
@@ -1545,12 +1854,28 @@ export function DashboardPage({ user }) {
                     <h2>📋 פירוט ימי האימונים</h2>
                   </div>
                   <div className="dash-action-bar-buttons">
-                    <button className="dash-action-btn" onClick={handlePrintPlan}>
-                      🖨️ הדפס תוכנית
-                    </button>
-                    <button className="dash-action-btn dash-action-btn--primary" onClick={() => setShowNewPlanModal(true)}>
-                      ✨ תוכנית חדשה
-                    </button>
+                    {!isEditingPlan ? (
+                      <>
+                        <button className="dash-action-btn dash-action-btn--edit" onClick={startEditingPlan}>
+                          ✏️ עריכת תוכנית
+                        </button>
+                        <button className="dash-action-btn" onClick={handlePrintPlan}>
+                          🖨️ הדפס תוכנית
+                        </button>
+                        <button className="dash-action-btn dash-action-btn--primary" onClick={() => setShowNewPlanModal(true)}>
+                          ✨ תוכנית חדשה
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="dash-action-btn dash-action-btn--save" onClick={handleSavePlanEdits} disabled={savingEdits}>
+                          {savingEdits ? '⏳ שומר...' : '💾 שמור שינויים'}
+                        </button>
+                        <button className="dash-action-btn dash-action-btn--cancel" onClick={handleCancelPlanEdits}>
+                          ❌ ביטול
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -1563,8 +1888,41 @@ export function DashboardPage({ user }) {
                 )}
               </div>
 
-              {/* Accordion days OR raw fallback */}
-              {planDays.length > 0 ? (
+              {/* Edit Mode Banner */}
+              {isEditingPlan && (
+                <div className="plan-edit-banner">
+                  <span>✏️ מצב עריכה פעיל — ערוך סטים, משקלים (ק"ג), תרגילים ודגשי טכניקה באופן חופשי!</span>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="dash-action-btn dash-action-btn--save" onClick={handleSavePlanEdits} disabled={savingEdits}>
+                      {savingEdits ? '⏳ שומר...' : '💾 שמור שינויים'}
+                    </button>
+                    <button className="dash-action-btn dash-action-btn--cancel" onClick={handleCancelPlanEdits}>
+                      ❌ ביטול
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Accordion days OR editable view OR raw fallback */}
+              {isEditingPlan ? (
+                <div className="plan-days-container">
+                  {editableDays.map((day, dIdx) => (
+                    <EditableDayCard
+                      key={dIdx}
+                      day={day}
+                      dIdx={dIdx}
+                      isOpen={Boolean(openDayIndices[dIdx])}
+                      onToggle={() => setOpenDayIndices(prev => ({ ...prev, [dIdx]: !prev[dIdx] }))}
+                      onUpdateField={updateExerciseField}
+                      onUpdateWeight={updateSetWeight}
+                      onAddSet={addSetToExercise}
+                      onRemoveSet={removeSetFromExercise}
+                      onRemoveEx={removeExerciseFromDay}
+                      onAddEx={addExerciseToDay}
+                    />
+                  ))}
+                </div>
+              ) : planDays.length > 0 ? (
                 <div className="plan-days-container">
                   {planDays.map((day, idx) => (
                     <PlanDayCard

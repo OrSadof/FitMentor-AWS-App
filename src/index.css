@@ -2155,6 +2155,267 @@ ul {
   box-shadow: 0 4px 15px rgba(34, 211, 238, 0.2);
 }
 
+.dash-action-btn--edit {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.dash-action-btn--edit:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: #fbbf24;
+  color: #fef08a;
+  box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);
+}
+
+.dash-action-btn--save {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(5, 150, 105, 0.4));
+  border-color: rgba(16, 185, 129, 0.6);
+  color: #34d399;
+}
+
+.dash-action-btn--save:hover {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.4), rgba(5, 150, 105, 0.6));
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.35);
+  color: #a7f3d0;
+}
+
+.dash-action-btn--cancel {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+
+.dash-action-btn--cancel:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+
+/* ─── Plan Editor Styles ─── */
+.plan-edit-banner {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 16px;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #fef08a;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.editable-ex-card {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 16px;
+  padding: 18px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s ease;
+}
+
+.editable-ex-card:focus-within {
+  border-color: #fbbf24;
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);
+}
+
+.editable-ex-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.editable-ex-title-input {
+  flex: 1;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #f8fafc;
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: 10px;
+}
+
+.btn-remove-ex {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn-remove-ex:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fff;
+}
+
+.editable-ex-badges-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.editable-badge-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.editable-badge-label {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.editable-badge-input {
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #38bdf8;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.editable-badge-input:focus {
+  border-color: #38bdf8;
+  outline: none;
+}
+
+.editable-weights-box {
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px dashed rgba(245, 158, 11, 0.3);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.editable-weights-header {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editable-sets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.editable-set-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
+.editable-weight-input {
+  width: 65px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  font-weight: 800;
+  font-size: 0.95rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.editable-weight-input:focus {
+  border-color: #fef08a;
+  outline: none;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
+}
+
+.btn-set-action {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn-set-action:hover {
+  background: rgba(245, 158, 11, 0.3);
+  color: #fff;
+}
+
+.editable-text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.editable-text-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editable-textarea {
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #f1f5f9;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  resize: vertical;
+  min-height: 48px;
+  font-family: inherit;
+}
+
+.editable-textarea:focus {
+  border-color: #fbbf24;
+  outline: none;
+}
+
+.btn-add-ex-day {
+  width: 100%;
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px dashed rgba(34, 211, 238, 0.3);
+  color: #38bdf8;
+  padding: 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+  margin-top: 10px;
+}
+
+.btn-add-ex-day:hover {
+  background: rgba(34, 211, 238, 0.18);
+  border-color: #38bdf8;
+}
+
 /* ─── Plan Day Accordion Cards ─── */
 .plan-days-container {
   display: flex;
