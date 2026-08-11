@@ -335,8 +335,6 @@ function parseExercisesFromContent(rawContent) {
     if (!ex.technique || ex.technique.trim().length === 0) {
       if (ex.extraDetails && ex.extraDetails.length > 0) {
         ex.technique = ex.extraDetails.shift();
-      } else {
-        ex.technique = 'שמור על גב ישר, מנח אגן ניטרלי, חזה מורם וטווח תנועה מלא לכל אורך התרגיל.';
       }
     }
   });
