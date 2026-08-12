@@ -829,13 +829,14 @@ async function handleGetAiInsights(userId, payload = {}) {
 
   const prompt = `
 אתה FitMentor AI, מאמן כושר אישי ומדען ספורט בכיר.
-תפקידך לנתח את האימונים האחרונים של המתאמן ולהחזיר 3-5 המלצות חכמות ומפורטות 100% מתוך ה-API בלבד!
+תפקידך לנתח את האימונים האחרונים של המתאמן ולהחזיר בין 2 ל-4 המלצות חכמות ומפורטות 100% מתוך ה-API בלבד!
+אתה כ-API מחליט בעצמך בדיוק כמה המלצות להחזיר לפי העומס והתובנות באימונים (בין 2 ל-4 המלצות).
 
 ⚠️ כללים מחייבים (100% מתוך ה-API):
 1. סיכום וניתוח האימונים האחרונים: נתח וסכם את התרגילים, המשקלים, העומסים והסטים מתוך האימונים האחרונים - ללא קשר לכמה זמן עבר מאז האימון האחרון!
 2. עידוד עקביות: אם עבר זמן מה מאז האימון האחרון ביחס לתאריך הנוכחי (${todayYmd}), כלול המלצה מדרבנת ומעצימה להתמיד, לא לעצור ולחזור לשגרה.
 3. כתיבה בעברית פשוטה, מקצועית וברורה, ללא Markdown.
-4. החזר JSON בלבד במבנה מדויק (ללא טקסט מחוץ ל-JSON):
+4. החזר JSON בלבד במבנה מדויק של בין 2 ל-4 המלצות (ללא טקסט מחוץ ל-JSON):
 {
   "recommendations": [
     {
@@ -850,7 +851,7 @@ async function handleGetAiInsights(userId, payload = {}) {
 ${trainingLogsContext}
 `;
 
-  const jsonSystemPrompt = "You are FitMentor AI. Your response must be ONLY a single raw valid JSON object starting with { and ending with }. Do not include markdown formatting like ```json or any explanations outside JSON.";
+  const jsonSystemPrompt = "You are FitMentor AI. Your response must be ONLY a single raw valid JSON object starting with { and ending with }. Decide on the exact count of recommendations to return (between 2 to 4 items). Do not include markdown formatting like ```json or any explanations outside JSON.";
 
   const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt, 1200);
   const parsed = safeParseJson(raw);
