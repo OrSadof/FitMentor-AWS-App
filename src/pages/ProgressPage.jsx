@@ -1047,20 +1047,20 @@ export function ProgressPage({ user }) {
               <div className="rec-list">
                 {loading && recs.length === 0 ? (
                   <div className="rec-item">
-                    <div className="rec-title">טוען תובנות...</div>
-                    <div className="rec-text">מנתח את האימונים מהחודש האחרון.</div>
+                    <div className="rec-title">⏳ DeepSeek API מנתח...</div>
+                    <div className="rec-text">מפיק המלצות חכמות בזמן אמת מתוך ה-API...</div>
                   </div>
                 ) : recs.length === 0 ? (
                   <div className="rec-item">
-                    <div className="rec-title">💡 אין תובנות זמינות כרגע</div>
-                    <div className="rec-text">כשתצטבר היסטוריה של אימונים, FitMentor יפיק תובנות מותאמות אישית.</div>
+                    <div className="rec-title">🤖 ממתין לניתוח מ-DeepSeek API</div>
+                    <div className="rec-text">תעד אימון ביומן לקבלת תובנות מותאמות אישית ישירות מה-API.</div>
                   </div>
                 ) : (
                   recs.map((rec, idx) => {
                     const type = (rec.type || 'tip').toLowerCase();
                     return (
                       <div key={idx} className={`rec-item ${type}`}>
-                        <div className="rec-title">{rec.title || defaultRecTitle(type)}</div>
+                        <div className="rec-title">{rec.title || 'תובנת AI'}</div>
                         <div className="rec-text">{rec.text}</div>
                       </div>
                     );
