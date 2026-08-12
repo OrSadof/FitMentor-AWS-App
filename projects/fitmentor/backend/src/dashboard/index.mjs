@@ -597,8 +597,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const FAST_AI_MODELS = [
-  "deepseek/deepseek-v4-flash-0731",
-  "deepseek/deepseek-chat"
+  "deepseek/deepseek-chat",
+  "deepseek/deepseek-v4-flash-0731"
 ];
 const API_TIMEOUT_MS = 25000;
 const MAX_OUTPUT_TOKENS = 4500;
@@ -648,7 +648,7 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 `.trim();
   }
 
-  const timeoutMs = isChatCall ? 12000 : 25000;
+  const timeoutMs = isChatCall ? 12000 : (systemPromptOverride ? 10000 : 25000);
   const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 1200 : MAX_OUTPUT_TOKENS);
   const modelsToTry = FAST_AI_MODELS;
   let lastErr = null;
@@ -674,12 +674,8 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
           { role: "user", content: promptText }
         ],
         max_tokens: maxTokens,
-        temperature: 0.4
+        temperature: systemPromptOverride ? 0.2 : 0.4
       };
-
-      if (systemPromptOverride || isChatCall) {
-        requestPayload.response_format = { type: "json_object" };
-      }
 
       const response = await fetchWithHardTimeout("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
@@ -854,7 +850,7 @@ async function handleGetAiInsights(userId, payload = {}) {
 ${trainingLogsContext}
 `;
 
-  const jsonSystemPrompt = "You are FitMentor AI, an expert sports scientist and fitness coach. Reply ONLY with a single valid JSON object containing recommendations array with 2 to 4 items: {\"recommendations\": [{\"type\": \"tip|warning|progression\", \"title\": \"...\", \"text\": \"...\"}]}. Do not include markdown codeblocks or any text outside JSON.";
+  const jsonSystemPrompt = "You are FitMentor AI. Your response must be ONLY a single raw valid JSON object starting with { and ending with }. Do not include markdown formatting like ```json or any explanations outside JSON.";
 
   const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt, 1200);
   const parsed = safeParseJson(raw);
