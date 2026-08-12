@@ -96,7 +96,13 @@ export function ProgressPage({ user }) {
       try {
         if (effectiveEmail) {
           const logs = getRecentTrainingLogs(effectiveEmail, 20);
-          const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30, logs).catch(() => null);
+          let insights = null;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            insights = await fitmentorApi.getAiInsights(effectiveEmail, 30, logs).catch(() => null);
+            if (insights && Array.isArray(insights.recommendations) && insights.recommendations.length > 0) {
+              break;
+            }
+          }
           if (insights) setAiInsights(insights);
         }
       } catch (err) {
@@ -1051,13 +1057,13 @@ export function ProgressPage({ user }) {
               <div className="rec-list">
                 {(loading || aiInsightsLoading) && recs.length === 0 ? (
                   <div className="rec-item">
-                    <div className="rec-title">⏳ DeepSeek API מנתח את האימונים...</div>
-                    <div className="rec-text">מפיק בין 2 ל-4 המלצות חכמות בזמן אמת מתוך ה-API...</div>
+                    <div className="rec-title">⏳ מנתח המלצות למתאמן...</div>
+                    <div className="rec-text">מפיק המלצות חכמות בזמן אמת מתוך האימונים...</div>
                   </div>
                 ) : recs.length === 0 ? (
                   <div className="rec-item">
-                    <div className="rec-title">🤖 ממתין לניתוח מ-DeepSeek API</div>
-                    <div className="rec-text">תעד אימון ביומן לקבלת תובנות מותאמות אישית ישירות מה-API.</div>
+                    <div className="rec-title">🤖 ממתין לניתוח המלצות למתאמן</div>
+                    <div className="rec-text">תעד אימון ביומן לקבלת תובנות והמלצות מותאמות אישית.</div>
                   </div>
                 ) : (
                   recs.map((rec, idx) => {
