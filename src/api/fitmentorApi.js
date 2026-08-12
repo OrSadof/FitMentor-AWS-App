@@ -114,8 +114,8 @@ export const fitmentorApi = {
   saveChatHistory: (userId, sessions) =>
     apiRequest("Dashboard", { action: "saveChatHistory", userId, payload: { sessions } }),
 
-  getAiInsights: (userId, days = 30) =>
-    apiRequest("Dashboard", { action: "getAiInsights", userId, payload: { days } }),
+  getAiInsights: (userId, days = 30, logs = []) =>
+    apiRequest("Dashboard", { action: "getAiInsights", userId, payload: { days, logs } }),
 
   getAchievements: (userId, logs) =>
     apiRequest("Dashboard", { action: "getAchievements", userId, payload: { logs } }),

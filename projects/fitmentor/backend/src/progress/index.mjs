@@ -70,9 +70,10 @@ async function queryTrainingLogs(userId) {
 
 	const logs = (all || [])
 		.map((item) => {
-			const { UserID, DataType, ...rest } = item || {};
+			const { UserID, DataType, Data, ...rest } = item || {};
 			const date = String(DataType || "").replace(/^TrainingLog_/, "");
-			return { date, data: rest };
+			const data = Data ?? rest;
+			return { date, data };
 		})
 		.filter((x) => isYmd(x.date));
 

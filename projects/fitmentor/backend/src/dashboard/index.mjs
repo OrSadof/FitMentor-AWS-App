@@ -588,9 +588,6 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const FAST_AI_MODELS = [
-  "google/gemini-2.5-flash-lite",
-  "openai/gpt-4o-mini",
-  "google/gemini-2.5-flash",
   "deepseek/deepseek-v4-flash-0731"
 ];
 const API_TIMEOUT_MS = 25000;
@@ -643,7 +640,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
 
   const timeoutMs = isChatCall ? 12000 : 25000;
   const maxTokens = isChatCall ? 1200 : MAX_OUTPUT_TOKENS;
-  const modelsToTry = isChatCall ? ["google/gemini-2.5-flash-lite", "openai/gpt-4o-mini"] : FAST_AI_MODELS;
+  const modelsToTry = FAST_AI_MODELS;
   let lastErr = null;
 
   for (let idx = 0; idx < modelsToTry.length; idx++) {
@@ -701,11 +698,10 @@ async function tryGenerateContent(promptText, isChatCall = false) {
     throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
   }
 
-  // Friendly Hebrew fallback for Chat UI
   return JSON.stringify({
-    reply: "סליחה, המערכת עמוסה מעט כרגע. תוכל לשאול אותי שוב בעוד מספר שניות, אשמח לעזור!",
+    reply: `שגיאה בתקשורת עם ה-AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
     updatedPlanHtml: null,
-    uiAction: null,
+    uiAction: null
   });
 }
 
@@ -724,39 +720,20 @@ async function deleteFromDb(userId, dataType) {
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { UserID: userId, DataType: dataType } }));
 }
 
-function isYmd(s) {
-  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+function filterLogsLastDays(logs, days = 30) {
+  const maxDays = Math.max(1, Math.floor(Number(days) || 30));
+  const today = new Date();
+  const cutoff = new Date(today);
+  cutoff.setDate(today.getDate() - maxDays);
+  const cutoffYmd = cutoff.toISOString().slice(0, 10);
+
+  return (logs || []).filter((log) => {
+    const d = String(log?.date || "");
+    return d && d >= cutoffYmd;
+  });
 }
 
-function parseYmdUtc(ymd) {
-  if (!isYmd(ymd)) return null;
-  const [y, m, d] = ymd.split("-").map((x) => Number(x));
-  if (!y || !m || !d) return null;
-  return new Date(Date.UTC(y, m - 1, d));
-}
-
-function startOfDayUtc(date) {
-  const d = new Date(date);
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
-}
-
-function filterLogsLastDays(logs, days) {
-  const safeDays = Number.isFinite(Number(days)) ? Math.max(1, Math.floor(Number(days))) : 30;
-  const today = startOfDayUtc(new Date());
-  const start = startOfDayUtc(new Date(today));
-  start.setUTCDate(today.getUTCDate() - (safeDays - 1));
-
-  return (Array.isArray(logs) ? logs : [])
-    .filter((l) => l && isYmd(l.date))
-    .filter((l) => {
-      const d = parseYmdUtc(l.date);
-      return d && d >= start && d <= today;
-    });
-}
-
-function safeParseJson(text) {
-  const raw = String(text ?? "").trim();
+function safeParseJson(raw) {
   if (!raw) return null;
   const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
   try {
@@ -778,26 +755,6 @@ function normalizeRecommendations(obj) {
     })
     .filter((r) => r.text && String(r.text).trim().length > 0)
     .slice(0, 8);
-}
-
-function buildAiInsightsFallback({ logsLastDays }) {
-  const count = Array.isArray(logsLastDays) ? logsLastDays.length : 0;
-  if (count <= 0) {
-    return [
-      {
-        type: "tip",
-        title: "אין מספיק נתונים",
-        text: "כרגע אין אימונים מתועדים ב-30 הימים האחרונים. תעד עוד 2–3 אימונים, ואז אוכל לתת תובנות מדויקות יותר.",
-      },
-    ];
-  }
-  return [
-    {
-      type: "tip",
-      title: "סיכום קצר",
-      text: `ב-30 הימים האחרונים תיעדת ${count} אימונים. כדי שאוכל להסיק מסקנות מדויקות יותר, הקפד למלא משקל וחזרות בכל סט ולתעד גם אימונים קלים.`,
-    },
-  ];
 }
 
 async function handleGetAiInsights(userId, payload = {}) {
@@ -870,10 +827,7 @@ ${trainingLogsContext}
 
   const raw = await tryGenerateContent(prompt);
   const parsed = safeParseJson(raw);
-  let recommendations = normalizeRecommendations(parsed);
-  if (!recommendations || recommendations.length === 0) {
-    recommendations = buildAiInsightsFallback({ logsLastDays });
-  }
+  const recommendations = normalizeRecommendations(parsed);
 
   return {
     recommendations,

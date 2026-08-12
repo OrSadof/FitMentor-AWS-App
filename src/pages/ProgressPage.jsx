@@ -93,7 +93,8 @@ export function ProgressPage({ user }) {
       // Hydrate AI Insights
       try {
         if (effectiveEmail) {
-          const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30).catch(() => null);
+          const logs = getRecentTrainingLogs(effectiveEmail, 20);
+          const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30, logs).catch(() => null);
           if (insights) setAiInsights(insights);
         }
       } catch (err) {

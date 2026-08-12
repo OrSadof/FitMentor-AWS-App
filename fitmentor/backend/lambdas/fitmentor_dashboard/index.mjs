@@ -588,9 +588,6 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const FAST_AI_MODELS = [
-  "google/gemini-2.5-flash-lite",
-  "openai/gpt-4o-mini",
-  "google/gemini-2.5-flash",
   "deepseek/deepseek-v4-flash-0731"
 ];
 const API_TIMEOUT_MS = 25000;
@@ -870,10 +867,7 @@ ${trainingLogsContext}
 
   const raw = await tryGenerateContent(prompt);
   const parsed = safeParseJson(raw);
-  let recommendations = normalizeRecommendations(parsed);
-  if (!recommendations || recommendations.length === 0) {
-    recommendations = buildAiInsightsFallback({ logsLastDays });
-  }
+  const recommendations = normalizeRecommendations(parsed);
 
   return {
     recommendations,
