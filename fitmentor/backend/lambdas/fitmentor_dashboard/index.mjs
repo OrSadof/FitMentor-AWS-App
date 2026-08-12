@@ -618,7 +618,7 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
   }
 }
 
-async function tryGenerateContent(promptText, isChatCall = false) {
+async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
@@ -643,6 +643,14 @@ async function tryGenerateContent(promptText, isChatCall = false) {
   const modelsToTry = isChatCall ? ["google/gemini-2.5-flash-lite", "openai/gpt-4o-mini"] : FAST_AI_MODELS;
   let lastErr = null;
 
+  let systemPrompt = "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never output illogical weights like 0kg, 0.5kg, 1kg or 0,0,1 sequences for loaded exercises. Always provide realistic numerical kg values for every set of every loaded exercise. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגשי טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, rich HTML for the workout plan.";
+
+  if (systemPromptOverride) {
+    systemPrompt = systemPromptOverride;
+  } else if (isChatCall) {
+    systemPrompt = "You are FitMentor AI, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON.";
+  }
+
   for (let idx = 0; idx < modelsToTry.length; idx++) {
     const model = modelsToTry[idx];
     const t0 = Date.now();
@@ -660,12 +668,7 @@ async function tryGenerateContent(promptText, isChatCall = false) {
         body: JSON.stringify({
           model,
           messages: [
-            {
-              role: "system",
-              content: isChatCall
-                ? "You are FitMentor AI, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON."
-                : "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never output illogical weights like 0kg, 0.5kg, 1kg or 0,0,1 sequences for loaded exercises. Always provide realistic numerical kg values for every set of every loaded exercise. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגשי טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, rich HTML for the workout plan."
-            },
+            { role: "system", content: systemPrompt },
             { role: "user", content: promptText }
           ],
           max_tokens: maxTokens,
@@ -844,7 +847,9 @@ async function handleGetAiInsights(userId, payload = {}) {
 ${trainingLogsContext}
 `;
 
-  const raw = await tryGenerateContent(prompt);
+  const jsonSystemPrompt = "You are FitMentor AI, an expert sports scientist and fitness coach. Reply ONLY with a single valid JSON object containing recommendations array: {\"recommendations\": [{\"type\": \"tip|warning|neglect|stall|progression\", \"title\": \"...\", \"text\": \"...\"}]}. Do not include markdown codeblocks or any text outside JSON.";
+
+  const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt);
   const parsed = safeParseJson(raw);
   const recommendations = normalizeRecommendations(parsed);
 
