@@ -1273,12 +1273,14 @@ function buildUnifiedProgressMetrics(normalizedData, localLogsObj) {
 
   // 5. Construct Final Volume Chart Data
   let volumeChart = normalizedData?.charts?.volume || normalizedData?.charts?.volumeLoad;
-  if (workoutVolumeByDate.size > 0) {
-    const sortedDates = Array.from(workoutVolumeByDate.keys()).sort();
-    volumeChart = {
-      labels: sortedDates.map(d => formatYmdHe(d) || d),
-      data: sortedDates.map(d => workoutVolumeByDate.get(d))
-    };
+  if (!volumeChart || !Array.isArray(volumeChart.data) || volumeChart.data.length === 0) {
+    if (workoutVolumeByDate.size > 0) {
+      const sortedDates = Array.from(workoutVolumeByDate.keys()).sort();
+      volumeChart = {
+        labels: sortedDates.map(d => formatYmdHe(d) || d),
+        data: sortedDates.map(d => workoutVolumeByDate.get(d))
+      };
+    }
   }
 
   return {

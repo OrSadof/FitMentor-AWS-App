@@ -247,12 +247,7 @@ function buildProgressFromTrainingLogs(logs, { maxDays = 365 } = {}) {
 		deadlift.push(a?.oneRM?.deadlift != null ? round1(a.oneRM.deadlift) : null);
 	}
 
-	const volStart = new Date(today);
-	volStart.setDate(today.getDate() - 13);
-	const volumeDays = workoutDays.filter((ymd) => {
-		const d = parseYmd(ymd);
-		return d && d >= volStart && d <= today;
-	});
+	const volumeDays = workoutDays.slice(Math.max(0, workoutDays.length - 15));
 	const volumeLabels = volumeDays.map((ymd) => {
 		const d = parseYmd(ymd);
 		return d ? `${d.getDate()}/${d.getMonth() + 1}` : ymd;
