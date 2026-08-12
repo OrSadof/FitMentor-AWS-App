@@ -777,51 +777,30 @@ function normalizeRecommendations(obj) {
     .slice(0, 8);
 }
 
-function buildAiInsightsFallback({ logsLastDays }) {
-  const count = Array.isArray(logsLastDays) ? logsLastDays.length : 0;
-  if (count <= 0) {
-    return [
-      {
-        type: "tip",
-        title: "אין מספיק נתונים",
-        text: "כרגע אין אימונים מתועדים ב-30 הימים האחרונים. תעד עוד 2–3 אימונים, ואז אוכל לתת תובנות מדויקות יותר.",
-      },
-    ];
-  }
-  return [
-    {
-      type: "tip",
-      title: "סיכום קצר",
-      text: `ב-30 הימים האחרונים תיעדת ${count} אימונים. כדי שאוכל להסיק מסקנות מדויקות יותר, הקפד למלא משקל וחזרות בכל סט ולתעד גם אימונים קלים.`,
-    },
-  ];
-}
-
 async function handleGetAiInsights(userId, payload = {}) {
-  const days = Number.isFinite(Number(payload?.days)) ? Number(payload.days) : 30;
   const trainingLogsResult = await handleGetTrainingLogs(userId);
-  const trainingLogs = trainingLogsResult.logs || [];
+  let trainingLogs = trainingLogsResult.logs || [];
 
-  if (trainingLogsResult.error) {
-    return {
-      recommendations: [
-        {
-          type: "warning",
-          title: "לא הצלחתי לטעון נתונים",
-          text: "כרגע אני לא מצליח למשוך את לוג האימונים. נסה שוב עוד מעט.",
-        },
-      ],
-      error: trainingLogsResult.error,
-    };
+  if (Array.isArray(payload?.logs) && payload.logs.length > 0) {
+    const existingDates = new Set(trainingLogs.map((l) => l.date));
+    payload.logs.forEach((l) => {
+      if (l && l.date && !existingDates.has(l.date)) {
+        trainingLogs.push({ date: l.date, data: { exercises: l.exercises || [] } });
+      }
+    });
   }
 
-  const logsLastDays = filterLogsLastDays(trainingLogs, days);
-  const contextLogs = logsLastDays.slice(0, 20);
+  // Sort logs by date descending (most recent workouts first)
+  trainingLogs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
-  let trainingLogsContext = "אין לוגי אימונים עדיין.";
-  if (contextLogs.length > 0) {
-    trainingLogsContext = `לוגי אימונים (30 ימים אחרונים, מהחדש לישן):\n`;
-    contextLogs.forEach((log) => {
+  // ALWAYS select the last 5-10 most recent workouts, regardless of how long ago they were logged!
+  const recentLogs = trainingLogs.slice(0, 10);
+  const todayYmd = new Date().toISOString().slice(0, 10);
+
+  let trainingLogsContext = "";
+  if (recentLogs.length > 0) {
+    trainingLogsContext = `האימונים האחרונים של המתאמן (מהחדש לישן, תאריך נוכחי: ${todayYmd}):\n`;
+    recentLogs.forEach((log) => {
       trainingLogsContext += `\n--- אימון בתאריך: ${log.date} ---\n`;
       const exercises = Array.isArray(log?.data?.exercises) ? log.data.exercises : [];
       for (const ex of exercises) {
@@ -838,28 +817,30 @@ async function handleGetAiInsights(userId, payload = {}) {
       }
       if (log?.data?.notes) trainingLogsContext += `הערות אימון: ${log.data.notes}\n`;
     });
+  } else {
+    trainingLogsContext = "אין עדיין אימונים מתועדים ביומן.";
   }
 
   const prompt = `
 אתה FitMentor AI, מאמן כושר אישי ומדען ספורט בכיר.
-צור בדיוק 3-5 המלצות חכמות, מפורטות ומקצועיות 100% מתוך ה-API בלבד!
+תפקידך לנתח את האימונים האחרונים של המתאמן ולהחזיר 3-5 המלצות חכמות ומפורטות 100% מתוך ה-API בלבד!
 
-⚠️ כללים מחייבים:
-1. נתח לעומק את היסטוריית האימונים, התרחישים, הסטים, המשקלים ועקביות האימונים.
-2. תן תובנות מקצועיות לגבי התקדמות במשקלים (Overload), איזון שרירים, עקביות, ומנוחה.
-3. כתוב בעברית פשוטה, מקצועית וברורה, ללא Markdown.
-4. החזר JSON בלבד במבנה מדויק:
+⚠️ כללים מחייבים (100% מתוך ה-API):
+1. סיכום וניתוח האימונים האחרונים: נתח וסכם את התרגילים, המשקלים, העומסים והסטים מתוך האימונים האחרונים - ללא קשר לכמה זמן עבר מאז האימון האחרון!
+2. עידוד עקביות: אם עבר זמן מה מאז האימון האחרון ביחס לתאריך הנוכחי (${todayYmd}), כלול המלצה מדרבנת ומעצימה להתמיד, לא לעצור ולחזור לשגרה.
+3. כתיבה בעברית פשוטה, מקצועית וברורה, ללא Markdown.
+4. החזר JSON בלבד במבנה מדויק (ללא טקסט מחוץ ל-JSON):
 {
   "recommendations": [
     {
       "type": "tip|warning|neglect|stall|progression",
       "title": "[כותרת ממוקדת מתוך ה-API]",
-      "text": "[המלצה מפורטת בת 2 משפטים מתוך ה-API בלבד]"
+      "text": "[המלצה מפורטת בת 2 משפטים מתוך ה-API המסכמת את האימונים האחרונים או מדרבנת להתמיד]"
     }
   ]
 }
 
-לוגי אימונים:
+נתוני האימונים האחרונים:
 ${trainingLogsContext}
 `;
 
@@ -869,7 +850,7 @@ ${trainingLogsContext}
 
   return {
     recommendations,
-    meta: { days: Math.max(1, Math.floor(Number(days) || 30)), workoutsConsidered: logsLastDays.length },
+    meta: { workoutsConsidered: recentLogs.length },
   };
 }
 
