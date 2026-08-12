@@ -1621,6 +1621,7 @@ function getRecentTrainingLogs(userId, count = 10) {
       .slice(0, count)
       .map(([date, log]) => ({
         date,
+        notes: log?.notes || '',
         exercises: (log?.exercises || []).map(ex => ({
           name: ex.name || ex.exercise,
           sets: (ex.sets || []).map(s => ({

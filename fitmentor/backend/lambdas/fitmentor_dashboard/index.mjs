@@ -588,7 +588,8 @@ function computeProgressSignals(trainingLogs) {
 }
 
 const FAST_AI_MODELS = [
-  "deepseek/deepseek-v4-flash-0731"
+  "deepseek/deepseek-v4-flash-0731",
+  "deepseek/deepseek-chat"
 ];
 const API_TIMEOUT_MS = 25000;
 const MAX_OUTPUT_TOKENS = 4500;
@@ -618,7 +619,7 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
   }
 }
 
-async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null) {
+async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null, maxTokensOverride = null) {
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
 
   if (!openRouterKey) {
@@ -639,8 +640,8 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
   }
 
   const timeoutMs = isChatCall ? 12000 : 25000;
-  const maxTokens = isChatCall ? 1200 : MAX_OUTPUT_TOKENS;
-  const modelsToTry = isChatCall ? ["google/gemini-2.5-flash-lite", "openai/gpt-4o-mini"] : FAST_AI_MODELS;
+  const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 1200 : MAX_OUTPUT_TOKENS);
+  const modelsToTry = FAST_AI_MODELS;
   let lastErr = null;
 
   let systemPrompt = "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never output illogical weights like 0kg, 0.5kg, 1kg or 0,0,1 sequences for loaded exercises. Always provide realistic numerical kg values for every set of every loaded exercise. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגשי טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, rich HTML for the workout plan.";
@@ -657,6 +658,20 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 
     try {
       console.log(`[AI_CALL_START] model=${model}, isChatCall=${isChatCall}`);
+      const requestPayload = {
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: promptText }
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.4
+      };
+
+      if (systemPromptOverride || isChatCall) {
+        requestPayload.response_format = { type: "json_object" };
+      }
+
       const response = await fetchWithHardTimeout("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -665,15 +680,7 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
           "HTTP-Referer": "https://fitmentor.app",
           "X-Title": "FitMentor"
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: promptText }
-          ],
-          max_tokens: maxTokens,
-          temperature: 0.4
-        })
+        body: JSON.stringify(requestPayload)
       }, timeoutMs);
 
       if (!response.ok) {
@@ -683,7 +690,13 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
       }
 
       const data = await response.json();
-      const text = data.choices?.[0]?.message?.content;
+      const msg = data.choices?.[0]?.message;
+      const text = (typeof msg?.content === "string" && msg.content.trim().length > 0)
+        ? msg.content
+        : (typeof msg?.reasoning === "string" && msg.reasoning.trim().length > 0
+          ? msg.reasoning
+          : (typeof data.choices?.[0]?.text === "string" ? data.choices[0].text : ""));
+
       if (typeof text === "string" && text.trim().length > 0) {
         console.log(`[AI_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
         return text;
@@ -755,10 +768,14 @@ function filterLogsLastDays(logs, days) {
     });
 }
 
-function safeParseJson(text) {
-  const raw = String(text ?? "").trim();
+function safeParseJson(raw) {
   if (!raw) return null;
-  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  let cleaned = String(raw).replace(/```json/gi, "").replace(/```/g, "").trim();
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
   try {
     return JSON.parse(cleaned);
   } catch {
@@ -772,8 +789,8 @@ function normalizeRecommendations(obj) {
   return recs
     .map((r) => {
       const type = String(r?.type || "tip").toLowerCase();
-      const title = sanitizeUserFacingText(r?.title || "תובנה");
-      const text = sanitizeUserFacingText(r?.text || r?.message || "");
+      const title = String(r?.title || "תובנה").trim();
+      const text = String(r?.text || r?.message || "").trim();
       return { type, title, text };
     })
     .filter((r) => r.text && String(r.text).trim().length > 0)
@@ -847,14 +864,15 @@ async function handleGetAiInsights(userId, payload = {}) {
 ${trainingLogsContext}
 `;
 
-  const jsonSystemPrompt = "You are FitMentor AI, an expert sports scientist and fitness coach. Reply ONLY with a single valid JSON object containing recommendations array: {\"recommendations\": [{\"type\": \"tip|warning|neglect|stall|progression\", \"title\": \"...\", \"text\": \"...\"}]}. Do not include markdown codeblocks or any text outside JSON.";
+  const jsonSystemPrompt = "You are FitMentor AI, an expert sports scientist and fitness coach. Reply ONLY with a single valid JSON object containing recommendations array with 2 to 4 items: {\"recommendations\": [{\"type\": \"tip|warning|progression\", \"title\": \"...\", \"text\": \"...\"}]}. Do not include markdown codeblocks or any text outside JSON.";
 
-  const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt);
+  const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt, 1200);
   const parsed = safeParseJson(raw);
   const recommendations = normalizeRecommendations(parsed);
 
   return {
     recommendations,
+    rawOutput: raw,
     meta: { workoutsConsidered: recentLogs.length },
   };
 }
