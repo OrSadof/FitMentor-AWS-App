@@ -192,35 +192,44 @@ async function handleSaveChatHistory(userId, payload) {
 }
 
 async function handleGetTrainingLogs(userId) {
-  const params = {
-    TableName: TABLE_NAME,
-    KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :TrainingLogPrefix)",
-    ExpressionAttributeValues: {
-      ":userId": userId,
-      ":TrainingLogPrefix": "TrainingLog_"
+  const rawId = String(userId || "").trim();
+  const lowerId = rawId.toLowerCase();
+  const idsToTry = Array.from(new Set([lowerId, rawId])).filter(Boolean);
+
+  for (const targetId of idsToTry) {
+    const params = {
+      TableName: TABLE_NAME,
+      KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :TrainingLogPrefix)",
+      ExpressionAttributeValues: {
+        ":userId": targetId,
+        ":TrainingLogPrefix": "TrainingLog_"
+      }
+    };
+
+    try {
+      const result = await docClient.send(new QueryCommand(params));
+      const items = result.Items || [];
+      if (items.length > 0) {
+        const logs = items.map((item) => {
+          const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
+          const data = Data ?? rest;
+
+          return {
+            date: String(DataType || "").replace("TrainingLog_", ""),
+            data
+          };
+        });
+
+        logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+        return { logs, error: null };
+      }
+    } catch (error) {
+      console.warn("Query training logs error:", error);
     }
-  };
-
-  try {
-    const result = await docClient.send(new QueryCommand(params));
-    const logs = (result.Items || []).map((item) => {
-      const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
-      const data = Data ?? rest;
-
-      return {
-        date: String(DataType || "").replace("TrainingLog_", ""),
-        data
-      };
-    });
-
-    logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-
-    return { logs, error: null };
-  } catch (error) {
-    const name = error?.name ? String(error.name) : "Error";
-    const message = error?.message ? String(error.message) : "Unknown error";
-    return { logs: [], error: `${name}: ${message}` };
   }
+
+  return { logs: [], error: null };
 }
 
 function sanitizeAndRepairPlan(rawHtml, reqDays) {

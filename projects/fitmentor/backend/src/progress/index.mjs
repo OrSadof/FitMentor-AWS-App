@@ -50,35 +50,45 @@ async function handleGetProgressData(userId, payload) {
 }
 
 async function queryTrainingLogs(userId) {
-	const all = [];
-	let lastKey;
-	do {
-		const res = await docClient.send(
-			new QueryCommand({
-				TableName: TABLE_NAME,
-				KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :prefix)",
-				ExpressionAttributeValues: {
-					":userId": userId,
-					":prefix": "TrainingLog_",
-				},
-				ExclusiveStartKey: lastKey,
-			})
-		);
-		all.push(...(res.Items || []));
-		lastKey = res.LastEvaluatedKey;
-	} while (lastKey);
+  const rawId = String(userId || "").trim();
+  const lowerId = rawId.toLowerCase();
+  const idsToTry = Array.from(new Set([lowerId, rawId])).filter(Boolean);
 
-	const logs = (all || [])
-		.map((item) => {
-			const { UserID, DataType, Data, ...rest } = item || {};
-			const date = String(DataType || "").replace(/^TrainingLog_/, "");
-			const data = Data ?? rest;
-			return { date, data };
-		})
-		.filter((x) => isYmd(x.date));
+  for (const targetId of idsToTry) {
+    const all = [];
+    let lastKey;
+    do {
+      const res = await docClient.send(
+        new QueryCommand({
+          TableName: TABLE_NAME,
+          KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :prefix)",
+          ExpressionAttributeValues: {
+            ":userId": targetId,
+            ":prefix": "TrainingLog_",
+          },
+          ExclusiveStartKey: lastKey,
+        })
+      );
+      all.push(...(res.Items || []));
+      lastKey = res.LastEvaluatedKey;
+    } while (lastKey);
 
-	logs.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-	return logs;
+    if (all.length > 0) {
+      const logs = (all || [])
+        .map((item) => {
+          const { UserID, DataType, Data, ...rest } = item || {};
+          const date = String(DataType || "").replace(/^TrainingLog_/, "");
+          const data = Data ?? rest;
+          return { date, data };
+        })
+        .filter((x) => isYmd(x.date));
+
+      logs.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      return logs;
+    }
+  }
+
+  return [];
 }
 
 function buildProgressFromTrainingLogs(logs, { maxDays = 365 } = {}) {

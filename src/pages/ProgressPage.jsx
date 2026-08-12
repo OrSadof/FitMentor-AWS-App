@@ -37,10 +37,11 @@ const SvgBrain = ({ size = 28, color = "#a855f7" }) => (
 );
 
 export function ProgressPage({ user }) {
-  const effectiveEmail = user?.email || localStorage.getItem('fitmentor_userId') || localStorage.getItem('userId') || '';
+  const effectiveEmail = String(user?.email || localStorage.getItem('fitmentor_userId') || localStorage.getItem('userId') || '').trim();
   
   const [progressData, setProgressData] = useState(null);
   const [aiInsights, setAiInsights] = useState(null);
+  const [aiInsightsLoading, setAiInsightsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   
   // Achievements state
@@ -80,6 +81,7 @@ export function ProgressPage({ user }) {
 
   const loadData = async () => {
     setLoading(true);
+    setAiInsightsLoading(true);
     setAchievementsLoading(true);
     try {
       let data = {};
@@ -99,6 +101,8 @@ export function ProgressPage({ user }) {
         }
       } catch (err) {
         console.warn('AI Insights load error:', err);
+      } finally {
+        setAiInsightsLoading(false);
       }
 
       // Load AI Achievements from recent training logs
@@ -1045,10 +1049,10 @@ export function ProgressPage({ user }) {
               </div>
 
               <div className="rec-list">
-                {loading && recs.length === 0 ? (
+                {(loading || aiInsightsLoading) && recs.length === 0 ? (
                   <div className="rec-item">
-                    <div className="rec-title">⏳ DeepSeek API מנתח...</div>
-                    <div className="rec-text">מפיק המלצות חכמות בזמן אמת מתוך ה-API...</div>
+                    <div className="rec-title">⏳ DeepSeek API מנתח את האימונים...</div>
+                    <div className="rec-text">מפיק בין 2 ל-4 המלצות חכמות בזמן אמת מתוך ה-API...</div>
                   </div>
                 ) : recs.length === 0 ? (
                   <div className="rec-item">
