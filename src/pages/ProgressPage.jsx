@@ -677,7 +677,7 @@ export function ProgressPage({ user }) {
 
   // PRs & Recommendations
   const prs = progressData?.prs || progressData?.personalRecords || [];
-  const recs = aiInsights?.recommendations || aiInsights?.recs || progressData?.insights?.recommendations || [];
+  const recs = aiInsights?.recommendations || aiInsights?.recs || [];
 
   // Process and unify PR & achievement items for Hall of Fame
   const allPrItems = React.useMemo(() => {

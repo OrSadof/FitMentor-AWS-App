@@ -374,28 +374,6 @@ function buildInsights({ dayAgg, today }) {
 	}
 
 	const recommendations = [];
-	if (workouts7 <= 1) {
-		recommendations.push({
-			type: "warning",
-			title: "עקביות",
-			text: "נראה שהתאמנת מעט בשבוע האחרון. נסה לקבוע 2–3 אימונים קבועים בשבוע כדי לראות התקדמות יציבה.",
-		});
-	}
-	if (balance.chest > 0 && balance.back > 0 && balance.chest >= balance.back + 3) {
-		recommendations.push({
-			type: "tip",
-			title: "איזון גוף",
-			text: "החזה חזק משמעותית מהגב. הוסף סטים לגב (חתירות/משיכות) כדי לשמור על כתפיים בריאות ויציבה.",
-		});
-	}
-	if (balance.legs > 0 && balance.legs <= 3) {
-		recommendations.push({
-			type: "tip",
-			title: "רגליים",
-			text: "נראה שיש פחות נפח עבודה לרגליים. אפילו אימון רגליים אחד בשבוע יכול לשפר כוח כללי ויציבות.",
-		});
-	}
-
 	return { balance, recommendations };
 }
 
