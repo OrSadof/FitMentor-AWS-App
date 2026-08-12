@@ -480,7 +480,7 @@ ul {
   font-size: clamp(1.35rem, 2vw, 1.7rem);
   font-weight: 800;
   margin-bottom: 1.5rem;
-  padding-right: 15px;
+  padding-right: 0;
   color: var(--text-main);
   letter-spacing: -0.02em;
   line-height: 1.25;
@@ -488,14 +488,8 @@ ul {
 }
 
 .section-title::before {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 3px;
-  border-radius: 2px;
-  background: linear-gradient(to bottom, var(--accent-cyan), var(--accent-green));
+  display: none !important;
+  content: none !important;
 }
 
 .about-desc {
