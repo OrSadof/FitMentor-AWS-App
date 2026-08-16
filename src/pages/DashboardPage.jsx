@@ -601,13 +601,28 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
   );
 }
 
-/* ─── Clean & Elegant HTML Formatter for AI Chat Messages ─── */
 function renderMarkdownInline(str) {
   if (!str) return '';
   let formatted = str;
+
+  // 1. Bold text: **text**
   formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong class="chat-bold-highlight">$1</strong>');
+
+  // 2. Italic text: *text*
   formatted = formatted.replace(/\*([^*]+)\*/g, '<em class="chat-italic-highlight">$1</em>');
-  formatted = formatted.replace(/(\b\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*(?:ק"ג|קילו|חזרות|סטים|שניות|קג)\b)/g, '<span class="chat-stat-pill">$1</span>');
+
+  // 3. Highlight dates: ב-3/8, ב-26/7, 2026-08-15, 15/08/2026
+  formatted = formatted.replace(/(?:\bב-|\b)(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{4}-\d{2}-\d{2})\b/g, '<span class="chat-date-pill">📅 $1</span>');
+
+  // 4. Highlight weight stats: 108 ק"ג, 80 קילו, 24kg
+  formatted = formatted.replace(/(\b\d+(?:\.\d+)?\s*(?:ק"ג|קילו|קג|kg|KG)\b)/gi, '<span class="chat-stat-pill chat-stat-weight">💪 $1</span>');
+
+  // 5. Highlight reps and sets: 3 חזרות, 8-12 חזרות, 3 סטים, 60 שניות
+  formatted = formatted.replace(/(\b\d+(?:\s*-\s*\d+)?\s*(?:חזרות|סטים|שניות|דקות|reps|sets)\b)/gi, '<span class="chat-stat-pill chat-stat-reps">⚡ $1</span>');
+
+  // 6. Highlight combinations like: 3X8, 3 X 10
+  formatted = formatted.replace(/(\b\d+\s*[xX✕]\s*\d+\b)/g, '<span class="chat-stat-pill chat-stat-combo">🎯 $1</span>');
+
   return formatted;
 }
 
