@@ -452,30 +452,7 @@ ${historyContext ? `4. 📜 היסטוריית תוכניות עבר:\n${history
   const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
 
   const rawResponse = await tryGenerateContent(fullPrompt, true);
-
-  let parsedResponse;
-  try {
-    const cleanJson = rawResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-    parsedResponse = JSON.parse(cleanJson);
-  } catch (e) {
-    console.error("JSON parse error in chat AI response:", e);
-    const replyMatch = rawResponse.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    let extractedReply = "";
-    if (replyMatch && replyMatch[1]) {
-      try {
-        extractedReply = JSON.parse(`"${replyMatch[1]}"`);
-      } catch {
-        extractedReply = replyMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
-      }
-    } else {
-      extractedReply = rawResponse.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').replace(/^\s*\{\s*"reply"\s*:\s*"/, '').replace(/"\s*,\s*"updatedPlanHtml".*$/s, '').trim();
-    }
-    parsedResponse = {
-      reply: extractedReply || "הבנתי אותך. איך אוכל לעזור לך עוד היום?",
-      updatedPlanHtml: null,
-      uiAction: null
-    };
-  }
+  const parsedResponse = extractChatReply(rawResponse);
 
   const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
   const aiMsgObj = { role: "ai", text: parsedResponse.reply, timestamp: Date.now() };
@@ -601,8 +578,67 @@ function computeProgressSignals(trainingLogs) {
   };
 }
 
+function extractChatReply(raw) {
+  if (!raw) return { reply: "שלום! איך אוכל לעזור לך היום?", updatedPlanHtml: null, uiAction: null };
+  let text = String(raw).trim();
+
+  // Strip markdown code fences if wrapped in ```json ... ```
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+  // 1. Try direct JSON.parse
+  try {
+    const obj = JSON.parse(text);
+    if (obj && typeof obj.reply === 'string' && obj.reply.trim()) {
+      return {
+        reply: obj.reply.trim(),
+        updatedPlanHtml: obj.updatedPlanHtml || null,
+        uiAction: obj.uiAction || null
+      };
+    }
+  } catch (e) {}
+
+  // 2. Match "reply": " ... " up to updatedPlanHtml / uiAction / end of object
+  const replyBlockMatch = text.match(/"reply"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:updatedPlanHtml|uiAction)"/);
+  if (replyBlockMatch && replyBlockMatch[1]) {
+    return {
+      reply: replyBlockMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'),
+      updatedPlanHtml: null,
+      uiAction: null
+    };
+  }
+
+  const lastReplyMatch = text.match(/"reply"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
+  if (lastReplyMatch && lastReplyMatch[1]) {
+    return {
+      reply: lastReplyMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'),
+      updatedPlanHtml: null,
+      uiAction: null
+    };
+  }
+
+  // 3. If text contains "reply", strip JSON wrappers
+  if (text.includes('"reply"')) {
+    let stripped = text.replace(/^\s*\{?\s*"reply"\s*:\s*"/, '');
+    stripped = stripped.replace(/"\s*,\s*"(?:updatedPlanHtml|uiAction)"[\s\S]*$/, '');
+    stripped = stripped.replace(/"\s*\}?\s*$/, '');
+    if (stripped.trim()) {
+      return {
+        reply: stripped.replace(/\\n/g, "\n").replace(/\\"/g, '"').trim(),
+        updatedPlanHtml: null,
+        uiAction: null
+      };
+    }
+  }
+
+  // 4. If plain text without JSON
+  return {
+    reply: text.replace(/^\{?\s*"reply"\s*:\s*"?/, '').replace(/"?\s*\}?$/, '').trim() || "הבנתי אותך. איך אוכל לעזור לך עוד היום?",
+    updatedPlanHtml: null,
+    uiAction: null
+  };
+}
+
 const FAST_AI_MODELS = [
-  "deepseek/deepseek-chat",
   "deepseek/deepseek-v4-flash-0731"
 ];
 const API_TIMEOUT_MS = 25000;
