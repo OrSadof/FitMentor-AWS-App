@@ -195,6 +195,7 @@ async function handleGetTrainingLogs(userId) {
   const rawId = String(userId || "").trim();
   const lowerId = rawId.toLowerCase();
   const idsToTry = Array.from(new Set([lowerId, rawId])).filter(Boolean);
+  const allLogsMap = new Map();
 
   for (const targetId of idsToTry) {
     const params = {
@@ -209,36 +210,29 @@ async function handleGetTrainingLogs(userId) {
     try {
       const result = await docClient.send(new QueryCommand(params));
       const items = result.Items || [];
-      if (items.length > 0) {
-        const logs = items.map((item) => {
-          const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
-          const data = Data ?? rest;
-
-          return {
-            date: String(DataType || "").replace("TrainingLog_", ""),
-            data
-          };
-        });
-
-        logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-
-        return { logs, error: null };
+      for (const item of items) {
+        const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
+        const data = Data ?? rest;
+        const date = String(DataType || "").replace("TrainingLog_", "");
+        if (date && !allLogsMap.has(date)) {
+          allLogsMap.set(date, { date, data });
+        }
       }
     } catch (error) {
       console.warn("Query training logs error:", error);
     }
   }
 
-  return { logs: [], error: null };
+  const logs = Array.from(allLogsMap.values());
+  logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return { logs, error: null };
 }
 
 function sanitizeAndRepairPlan(rawHtml, reqDays) {
   let html = String(rawHtml || '').trim();
 
-  // 0. Clean trailing unclosed HTML tags if truncated at token limit
   html = html.replace(/<[^>]*$/g, '').trim();
 
-  // 1. Ensure wrapper exists
   if (!html.includes('ai-plan-result')) {
     html = `<div class="ai-plan-result">\n${html}\n</div>`;
   }
@@ -253,31 +247,29 @@ async function handleGeneratePlan(userId, payload) {
   const fitnessDesc = { 'beginner': 'מתחיל (0-6 חודשים)', 'intermediate': 'בינוני (6-24 חודשים)', 'advanced': 'מתקדם (2+ שנים)' }[fitnessLevel] || fitnessLevel;
   const equipmentDesc = { 'gym': 'חדר כושר מלא', 'dumbbells': 'משקולות בלבד', 'bodyweight': 'משקל גוף בלבד', 'minimal': 'ציוד ביתי מינימלי' }[equipment] || equipment;
 
-  const prompt = `חובה מוחלטת: צור תוכנית אימונים 100% מלאה של בדיוק ${reqDays} ימים נפרדים מתוך ה-API!
+  const prompt = `בנה תוכנית אימונים מקצועית של בדיוק ${reqDays} ימים נפרדים לחדר כושר.
 מתאמן: גיל ${age}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרה ${goal}.
 
 ⚠️ כללים מחייבים (100% חובה לעמוד בכולם!):
 1. בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> בפורמט:
-${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצת שרירים / סוג אימון]</h3>`).join('\n')}
+${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם האימון]</h3>`).join('\n')}
 
-2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל חובה בדיוק 5 פסקאות <p> (חובה לכלול דגשי טכניקה לכל תרגיל ותרגיל!):
+2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל בדיוק 5 פסקאות <p>:
 <p>🏋️ <strong>[שם התרגיל בעברית] (English Name)</strong></p>
 <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
 <p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ועשירה בת 2 משפטים על מנח גוף, גב ישר, נשימה וטווח תנועה - חובה לכל תרגיל!]</p>
-<p><strong>התקדמות עומס והסבר:</strong> [משפט 1-2 מפורט על אופן העלאת משקלי העבודה]</p>
+<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ממוקדת בת 1-2 משפטים על מנח גוף, גב ישר וטווח תנועה]</p>
+<p><strong>התקדמות עומס והסבר:</strong> [משפט 1 מפורט על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
 
-3. כללי איכות ומשקלים מחייבים:
-• חל איסור מוחלט להשמיט את פסקאות "דגשי טכניקה"! חובה שלכל תרגיל ותרגיל בתוכנית תהיה פסקה המתחילה ב-<strong>דגשי טכניקה:</strong>!
-• חל איסור מוחלט על תשובות עצלניות של מילה אחת כמו "מושלמת.", "טובה.", "נכון" או "מעולה" בדגשי הטכניקה!
-• חל איסור מוחלט על משקלים לא הגיוניים כמו 0 ק"ג, 0.5 ק"ג, 1 ק"ג, או רצפים כמו 0,0,1!
-• לכל תרגיל טעון (חדר כושר/משקולות) חובה לתת משקלי עבודה הגיוניים וריאליסטיים בק"ג המתאימים למשקל המתאמן (${weight} ק"ג).
-• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר (למשל: סט 1: 40 ק"ג | סט 2: 35 ק"ג | סט 3: 30 ק"ג).
+3. כללי משקלים מחייבים:
+• משקלים מספריים בלבד בק"ג לכל סט (לדוגמה: סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג).
+• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר.
+• חל איסור מוחלט לרשום "משקל גוף", וחל איסור מוחלט לרשום מילים סתמיות כמו "טובה" בדגשי הטכניקה!
 
 4. בסוף <div class="plan-tips"> עם 3 טיפי תזונה והתאוששות. עטוף ב-<div class="ai-plan-result">.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 2;
   let planHtml = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -295,7 +287,7 @@ ${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם קבוצ
         break;
       }
 
-      if (htmlLen > 800 && dayCount > 0) {
+      if (htmlLen > 800) {
         planHtml = candidateHtml;
         break;
       }
@@ -362,90 +354,89 @@ async function handleChat(userId, payload) {
 
   let messages = chatData?.messages || [];
   const rawPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
-  // Convert heavy plan HTML to lightweight text summary for fast 2-second Chat AI responses
   const currentPlanSummary = rawPlanHtml.length > 2500
     ? rawPlanHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 2000)
     : rawPlanHtml;
 
-  let trainingLogsContext = "אין לוגי אימונים עדיין.";
+  let trainingLogsContext = "אין לוגי אימונים מתועדים במערכת עדיין.";
 
   if (trainingLogs.length > 0) {
-    const recentLogs = trainingLogs.slice(0, 10);
+    const recentLogs = trainingLogs.slice(0, 20);
 
-    trainingLogsContext = "היסטוריית אימונים (מהחדש לישן):\n";
+    trainingLogsContext = `נמצאו ${trainingLogs.length} אימונים מתועדים ב-DB (להלן ${recentLogs.length} האימונים האחרונים מהחדש לישן):\n`;
 
-    recentLogs.forEach(log => {
-      trainingLogsContext += `\n--- אימון בתאריך: ${log.date} ---\n`;
+    recentLogs.forEach((log, logIdx) => {
+      const exList = Array.isArray(log.data?.exercises) ? log.data.exercises : [];
+      const weightInfo = log.data?.bodyWeightKg ? ` (משקל גוף שנשקל: ${log.data.bodyWeightKg} ק"ג)` : '';
+      trainingLogsContext += `\n📅 אימון #${logIdx + 1} - תאריך: ${log.date}${weightInfo}\n`;
 
-      if (log.data.exercises && Array.isArray(log.data.exercises)) {
-        log.data.exercises.slice(0, 8).forEach(exercise => {
-          trainingLogsContext += `תרגיל: ${exercise.name}\n`;
-
-          if (Array.isArray(exercise.sets) && exercise.sets.length > 0) {
-            const setsDetails = exercise.sets.slice(0, 8).map((s, i) => {
-              const weight = s.weight ? `${s.weight}kg` : 'משקל גוף';
-              const reps = s.reps ? `${s.reps} חזרות` : '? חזרות';
-              return `   סט ${i + 1}: ${weight} X ${reps}`;
-            }).join("\n");
-
-            trainingLogsContext += setsDetails + "\n";
+      if (exList.length > 0) {
+        exList.forEach((exercise) => {
+          const sets = Array.isArray(exercise.sets) ? exercise.sets : [];
+          if (sets.length > 0) {
+            const setsStr = sets.map((s, sIdx) => {
+              const w = (s.weight != null && String(s.weight).trim() !== '') ? `${s.weight} ק"ג` : 'משקל גוף';
+              const r = (s.reps != null && String(s.reps).trim() !== '') ? `${s.reps} חזרות` : '';
+              return `סט ${sIdx + 1}: ${w}${r ? ` X ${r}` : ''}`;
+            }).join(' | ');
+            trainingLogsContext += `  • תרגיל: ${exercise.name || 'תרגיל ללא שם'} -> ${setsStr}\n`;
           } else {
-            trainingLogsContext += `   (אין פירוט סטים)\n`;
+            trainingLogsContext += `  • תרגיל: ${exercise.name || 'תרגיל ללא שם'} (ללא פירוט סטים)\n`;
           }
         });
+      } else {
+        trainingLogsContext += `  (לא נרשמו תרגילים ספציפיים)\n`;
       }
 
-      if (log.data.notes) {
-        trainingLogsContext += `הערות אימון: ${log.data.notes}\n`;
+      if (log.data?.notes) {
+        trainingLogsContext += `  הערות אימון: ${log.data.notes}\n`;
       }
     });
   }
 
   const systemPrompt = `
-  אתה FitMentor AI, מאמן אישי חכם, שמכיר את הפיצ'רים של האתר FitMentor ומסביר למשתמש איך להשתמש בהם.
+אתה FitMentor AI, מאמן כושר אישי מקצועי, חכם, קשוב ומעצים המכיר את כל נתוני המשתמש מתוך ה-Database (DynamoDB) של FitMentor.
 
-  שם המשתמש (אם קיים): ${displayName || "לא ידוע"}
+שם המשתמש: ${displayName || "אור"}
+פרטי המתאמן (גיל, משקל, גובה, מטרה, ציוד): ${planParamsContext}
 
-  כללי פנייה לפי שם (חשוב):
-  - אם יש שם משתמש, כשזו הודעה ראשונה בשיחה (אין היסטוריית צ'אט) פתח בברכה קצרה עם השם שלו.
-  - בהמשך השיחה, השתמש בשם מדי פעם בצורה טבעית (לא בכל הודעה).
-  - אם אין שם משתמש, אל תנחש שם ואל תמציא.
+══════════════════════════════════════
+📊 נתוני אמת מתוך מסד הנתונים:
+══════════════════════════════════════
 
-  כללי שפה וסגנון (חשוב):
-  - כתוב למשתמש בעברית פשוטה וברורה.
-  - אל תשתמש ב-Markdown בכלל (בלי **, בלי *, בלי כותרות ###, בלי backticks).
-  - אל תזכיר שמות קבצים/סיומות או מונחים טכניים (כמו JSON/DynamoDB).
-  - השתמש ברשימות בצורה ידידותית: למשל "1) ..." או "- ...".
+1. 🏋️ תוכנית אימונים נוכחית של המתאמן:
+${currentPlanSummary}
 
-  הקשר מוצר (Product Context):
-  - האתר כולל "לוג אימונים" (בתפריט הצד) לתיעוד משקלים וחזרות.
-  - האתר כולל "מעקב התקדמות" ו"המלצות חכמות".
-  - הנתונים נשמרים ומאפשרים לך לנתח שיפור בכוח/נפח.
+2. 📝 היסטוריית לוגי אימונים מלאה (מתוך לוג האימונים):
+${trainingLogsContext}
 
-  המצב הנוכחי:
-  1. תוכנית אימונים נוכחית (תמצית): ${currentPlanSummary}
-  2. היסטוריית אימונים מפורטת (מצורפת למטה) - השתמש בה כדי לנתח התקדמות במשקלי עבודה!
-  3. בקשת המשתמש.
+3. 📈 סיכום סיגנלי התקדמות:
+${progress.summary}
 
-  הוראות:
-  1. אם המשתמש שואל על התקדמות, הסתכל על המשקלים והחזרות בלוגים וציין מספרים מדויקים ("אני רואה שבשבוע שעבר עשית 60 קילו ועכשיו 65").
-  2. אם המשתמש מבקש לשנות את התוכנית, שכתב את ה-HTML בהתאם.
-  3. אם המשתמש מבקש "תוכנית חדשה":
-     - אם יש סימני התקדמות בלוגים, אל תרוץ ישר ליצור תוכנית חדשה: קודם שאל שאלה קצרה על המטרה שלו עכשיו (ולא רק "מה המטרה"—הצע 2–4 אפשרויות נפוצות).
-     - אם המשתמש מתעקש על "תוכנית חדשה לגמרי" או אומר שהתוכנית לא מתאימה/נבנתה בטעות: אל תייצר תוכנית בתוך הצ'אט.
-       במקום זה החזר uiAction = "openNewPlanForm" ובקש ממנו למלא מחדש את הטופס.
-     - אם אין מספיק לוגים/אין סימני התקדמות, שאל 1–2 שאלות קצרות כדי להבין למה הוא רוצה להחליף, והצע פתרון פשוט.
-  
-  פורמט תשובה חובה (החזר JSON תקין בלבד, ללא markdown וללא טקסט מחוץ ל-JSON):
-  {
-    "reply": "הטקסט שאתה עונה למשתמש בעברית (ללא מילוט מורכב)",
-    "updatedPlanHtml": null,
-    "uiAction": null
-  }
+${historyContext ? `4. 📜 היסטוריית תוכניות עבר:\n${historyContext}\n` : ''}
+══════════════════════════════════════
+🎯 הנחיות מחייבות למענה:
+══════════════════════════════════════
+1. כאשר המשתמש שואל אותך על האימונים שלו, על התקדמות, על משקלים, על תרגילים שביצע או על תאריכים:
+   - השתמש תמיד בנתונים המדויקים שנמצאים למעלה בלוגי האימונים!
+   - אם יש אימונים מתועדים ברשימה למעלה, ציין תמיד מספרים מדויקים: תאריך, שם התרגיל, כמה סטים, איזה משקל בק"ג וכמה חזרות בוצעו. לעולם אל תטען שאין מידע כשמופיעים אימונים ברשימה!
+   - אם אין עדיין אימונים מתועדים ברשימה, הסבר לו בנעימות שברגע שיתעד אימון בלשונית "לוג אימונים" תוכל לנתח לו את הביצועים וההתקדמות.
 
-  פרטי המתאמן: ${planParamsContext}
-  סיכום התקדמות: ${progress.summary}
-  `;
+2. כללי שפה וסגנון:
+   - כתוב למשתמש בעברית פשוטה, חמה, מקצועית ומעצימה.
+   - אל תשתמש ב-Markdown בכלל (בלי **, בלי *, בלי כותרות ###, בלי backticks).
+   - אל תזכיר שמות קבצים, מסדי נתונים או מונחים טכניים.
+   - השתמש ברשימות ידידותיות: למשל "1) ..." או "- ...".
+
+3. אם המשתמש מבקש לשנות את התוכנית, שכתב את ה-HTML של התוכנית והחזר אותו ב-updatedPlanHtml.
+
+4. פורמט תשובה חובה (החזר JSON תקין בלבד, ללא markdown וללא טקסט מחוץ ל-JSON):
+{
+  "reply": "הטקסט שאתה עונה למשתמש בעברית",
+  "updatedPlanHtml": null,
+  "uiAction": null
+}
+`;
 
   const recentHistory = messages.slice(-4).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
   const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
@@ -652,8 +643,8 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 `.trim();
   }
 
-  const timeoutMs = isChatCall ? 12000 : (systemPromptOverride ? 10000 : 25000);
-  const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 1200 : MAX_OUTPUT_TOKENS);
+  const timeoutMs = isChatCall ? 15000 : (systemPromptOverride ? 10000 : 25000);
+  const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 2500 : MAX_OUTPUT_TOKENS);
   const modelsToTry = FAST_AI_MODELS;
   let lastErr = null;
 
