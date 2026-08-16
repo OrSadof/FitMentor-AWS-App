@@ -356,6 +356,10 @@ async function handleChat(userId, payload) {
     console.warn('[HANDLE_CHAT_LOGS_WARN]', trainingLogsResult.error);
   }
 
+  const progress = computeProgressSignals(trainingLogs);
+  const planParams = planData?.params || {};
+  const planParamsContext = Object.keys(planParams).length > 0 ? JSON.stringify(planParams) : 'לא סופקו פרטים נוספים';
+
   let messages = chatData?.messages || [];
   const rawPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
   // Convert heavy plan HTML to lightweight text summary for fast 2-second Chat AI responses
@@ -719,11 +723,10 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
     throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
   }
 
-  // Friendly Hebrew fallback for Chat UI
   return JSON.stringify({
-    reply: "סליחה, המערכת עמוסה מעט כרגע. תוכל לשאול אותי שוב בעוד מספר שניות, אשמח לעזור!",
+    reply: `שגיאה בתקשורת עם ה-AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
     updatedPlanHtml: null,
-    uiAction: null,
+    uiAction: null
   });
 }
 
@@ -742,35 +745,17 @@ async function deleteFromDb(userId, dataType) {
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { UserID: userId, DataType: dataType } }));
 }
 
-function isYmd(s) {
-  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
+function filterLogsLastDays(logs, days = 30) {
+  const maxDays = Math.max(1, Math.floor(Number(days) || 30));
+  const today = new Date();
+  const cutoff = new Date(today);
+  cutoff.setDate(today.getDate() - maxDays);
+  const cutoffYmd = cutoff.toISOString().slice(0, 10);
 
-function parseYmdUtc(ymd) {
-  if (!isYmd(ymd)) return null;
-  const [y, m, d] = ymd.split("-").map((x) => Number(x));
-  if (!y || !m || !d) return null;
-  return new Date(Date.UTC(y, m - 1, d));
-}
-
-function startOfDayUtc(date) {
-  const d = new Date(date);
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
-}
-
-function filterLogsLastDays(logs, days) {
-  const safeDays = Number.isFinite(Number(days)) ? Math.max(1, Math.floor(Number(days))) : 30;
-  const today = startOfDayUtc(new Date());
-  const start = startOfDayUtc(new Date(today));
-  start.setUTCDate(today.getUTCDate() - (safeDays - 1));
-
-  return (Array.isArray(logs) ? logs : [])
-    .filter((l) => l && isYmd(l.date))
-    .filter((l) => {
-      const d = parseYmdUtc(l.date);
-      return d && d >= start && d <= today;
-    });
+  return (logs || []).filter((log) => {
+    const d = String(log?.date || "");
+    return d && d >= cutoffYmd;
+  });
 }
 
 function safeParseJson(raw) {
@@ -799,7 +784,7 @@ function normalizeRecommendations(obj) {
       return { type, title, text };
     })
     .filter((r) => r.text && String(r.text).trim().length > 0)
-    .slice(0, 8);
+    .slice(0, 4);
 }
 
 async function handleGetAiInsights(userId, payload = {}) {
@@ -840,7 +825,7 @@ async function handleGetAiInsights(userId, payload = {}) {
           trainingLogsContext += `   סט ${i + 1}: ${weight} X ${reps}\n`;
         }
       }
-      if (log?.data?.notes) trainingLogsContext += `הערות אימון: ${log.data.notes}\n`;
+      if (log?.data?.notes) trainingLogsContext += `הערות ותגובות המתאמן: ${log.data.notes}\n`;
     });
   } else {
     trainingLogsContext = "אין עדיין אימונים מתועדים ביומן.";

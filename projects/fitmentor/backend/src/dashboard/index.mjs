@@ -356,6 +356,10 @@ async function handleChat(userId, payload) {
     console.warn('[HANDLE_CHAT_LOGS_WARN]', trainingLogsResult.error);
   }
 
+  const progress = computeProgressSignals(trainingLogs);
+  const planParams = planData?.params || {};
+  const planParamsContext = Object.keys(planParams).length > 0 ? JSON.stringify(planParams) : 'לא סופקו פרטים נוספים';
+
   let messages = chatData?.messages || [];
   const rawPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
   // Convert heavy plan HTML to lightweight text summary for fast 2-second Chat AI responses
