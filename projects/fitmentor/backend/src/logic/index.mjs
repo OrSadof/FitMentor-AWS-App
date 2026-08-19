@@ -649,6 +649,13 @@ export const handler = async (event) => {
           };
 
         } catch (err) {
+          if (err.name === "UserDisabledException" || (err.name === "NotAuthorizedException" && (String(err.message || "").toLowerCase().includes("disabled") || String(err.message || "").toLowerCase().includes("blocked")))) {
+            return {
+              statusCode: 403,
+              headers,
+              body: JSON.stringify({ message: "המשתמש נחסם על ידי מנהל המערכת.", isBlocked: true, status: "blocked" })
+            };
+          }
           if (err.name === "NotAuthorizedException") {
             return {
               statusCode: 401,

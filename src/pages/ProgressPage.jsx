@@ -140,47 +140,45 @@ export function ProgressPage({ user }) {
     }
   };
 
+  // Data presence calculations
+  const overviewObj = progressData?.overview || {};
+  const weightSeriesObj = overviewObj.bodyWeight || overviewObj.bodyweight || overviewObj.weight || null;
+  const weightDataList = (Array.isArray(weightSeriesObj?.data) ? weightSeriesObj.data : []).map(Number).filter(n => Number.isFinite(n) && n > 0);
+  const hasWeightData = Boolean(weightSeriesObj?.labels?.length > 0 && weightDataList.length > 0);
+
+  const chartsObj = progressData?.charts || {};
+  const ex1rmByDay30 = overviewObj.exercise1rmByDay30 || {};
+  const exercise1RMObj = chartsObj.exercise1RM || chartsObj.exerciseOneRM;
+  const availableExercises = exercise1RMObj ? (Array.isArray(exercise1RMObj.exercises) ? exercise1RMObj.exercises : Object.keys(exercise1RMObj.seriesByExercise || {})) : [];
+
+  const currentEx1rm = selectedExercise1rm || availableExercises[0] || '';
+  const series1rm = currentEx1rm && exercise1RMObj?.seriesByExercise ? exercise1RMObj.seriesByExercise[currentEx1rm] : null;
+  const has1rmData = selectedDay1rm
+    ? Boolean(ex1rmByDay30[selectedDay1rm] && Object.values(ex1rmByDay30[selectedDay1rm]).some(v => Number(v) > 0))
+    : Boolean(Array.isArray(series1rm) && series1rm.some(v => Number(v) > 0));
+
+  const volumeObj = chartsObj.volume || chartsObj.volumeLoad;
+  const hasVolumeData = Boolean(Array.isArray(volumeObj?.data) && volumeObj.data.length > 0 && volumeObj.data.some(v => Number(v) > 0));
+
+  const bodyBalance = computeBodyBalance(progressData, aiInsights);
+  const hasBalanceData = Boolean(bodyBalance.groups && bodyBalance.groups.some(g => g.score > 0 || (g.workouts && g.workouts > 0)));
+
   // Render Bodyweight Chart
   useEffect(() => {
-    if (!weightCanvasRef.current) return;
-    if (weightChartInst.current) weightChartInst.current.destroy();
-
-    const overview = progressData?.overview || {};
-    const series = overview.bodyWeight || overview.bodyweight || overview.weight || null;
-    const labels = Array.isArray(series?.labels) ? series.labels : [];
-    const data = (Array.isArray(series?.data) ? series.data : []).map(v => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    });
-
-    const hasPoints = labels.length > 0 && data.some(x => typeof x === 'number');
-
-    if (!hasPoints) {
-      // Render baseline empty chart placeholder
-      const ctx = weightCanvasRef.current.getContext('2d');
-      weightChartInst.current = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: ['שבוע 1', 'שבוע 2', 'שבוע 3', 'שבוע 4'],
-          datasets: [{
-            label: 'משקל גוף (ללא נתונים)',
-            data: [null, null, null, null],
-            borderColor: 'rgba(34, 211, 238, 0.3)',
-            borderDash: [5, 5]
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            y: { grid: { color: 'rgba(148, 163, 184, 0.16)' } },
-            x: { grid: { display: false } }
-          }
-        }
-      });
+    if (!weightCanvasRef.current || !hasWeightData) {
+      if (weightChartInst.current) {
+        try { weightChartInst.current.destroy(); } catch {}
+        weightChartInst.current = null;
+      }
       return;
     }
+
+    if (weightChartInst.current) {
+      try { weightChartInst.current.destroy(); } catch {}
+    }
+
+    const labels = weightSeriesObj.labels;
+    const data = weightSeriesObj.data;
 
     const ctx = weightCanvasRef.current.getContext('2d');
     const fill = ctx.createLinearGradient(0, 0, 0, 260);
@@ -230,83 +228,117 @@ export function ProgressPage({ user }) {
     });
 
     return () => {
-      if (weightChartInst.current) weightChartInst.current.destroy();
+      if (weightChartInst.current) {
+        try { weightChartInst.current.destroy(); } catch {}
+        weightChartInst.current = null;
+      }
     };
-  }, [progressData]);
+  }, [progressData, hasWeightData]);
 
   // Render 1RM & Volume Charts
   useEffect(() => {
-    if (!chart1rmRef.current || !volumeCanvasRef.current) return;
-    if (chart1rmInst.current) chart1rmInst.current.destroy();
-    if (volumeChartInst.current) volumeChartInst.current.destroy();
-
-    const charts = progressData?.charts || {};
-    const overview = progressData?.overview || {};
-    const workoutDays30 = Array.isArray(overview.workoutDays30) ? overview.workoutDays30 : [];
-    const ex1rmByDay30 = overview.exercise1rmByDay30 || {};
-
     // 1. Render 1RM Chart
-    const ctx1 = chart1rmRef.current.getContext('2d');
-    if (selectedDay1rm && ex1rmByDay30[selectedDay1rm]) {
-      const rows = Object.entries(ex1rmByDay30[selectedDay1rm])
-        .map(([name, v]) => ({ name, v: Number(v) }))
-        .filter(x => x.name && Number.isFinite(x.v) && x.v > 0)
-        .sort((a, b) => b.v - a.v)
-        .slice(0, 18);
+    if (chart1rmRef.current && has1rmData) {
+      if (chart1rmInst.current) {
+        try { chart1rmInst.current.destroy(); } catch {}
+      }
+      const ctx1 = chart1rmRef.current.getContext('2d');
 
-      if (rows.length > 0) {
-        const grad = ctx1.createLinearGradient(0, 0, 0, 320);
-        grad.addColorStop(0, 'rgba(34, 211, 238, 0.95)');
-        grad.addColorStop(1, 'rgba(168, 85, 247, 0.85)');
+      if (selectedDay1rm && ex1rmByDay30[selectedDay1rm]) {
+        const rows = Object.entries(ex1rmByDay30[selectedDay1rm])
+          .map(([name, v]) => ({ name, v: Number(v) }))
+          .filter(x => x.name && Number.isFinite(x.v) && x.v > 0)
+          .sort((a, b) => b.v - a.v)
+          .slice(0, 18);
+
+        if (rows.length > 0) {
+          const grad = ctx1.createLinearGradient(0, 0, 0, 320);
+          grad.addColorStop(0, 'rgba(34, 211, 238, 0.95)');
+          grad.addColorStop(1, 'rgba(168, 85, 247, 0.85)');
+
+          chart1rmInst.current = new Chart(ctx1, {
+            type: 'bar',
+            data: {
+              labels: rows.map(r => r.name),
+              datasets: [{
+                label: 'Estimated 1RM',
+                data: rows.map(r => Math.round(r.v)),
+                backgroundColor: grad,
+                borderRadius: 10
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              indexAxis: 'y',
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { grid: { color: 'rgba(148, 163, 184, 0.18)' } },
+                y: { grid: { display: false } }
+              }
+            }
+          });
+        }
+      } else if (has1rmData && series1rm) {
+        const labels = exercise1RMObj?.labels || [];
+        const grad = ctx1.createLinearGradient(0, 0, 600, 0);
+        grad.addColorStop(0, '#22d3ee');
+        grad.addColorStop(1, '#a855f7');
 
         chart1rmInst.current = new Chart(ctx1, {
-          type: 'bar',
+          type: 'line',
           data: {
-            labels: rows.map(r => r.name),
+            labels,
             datasets: [{
-              label: 'Estimated 1RM',
-              data: rows.map(r => Math.round(r.v)),
-              backgroundColor: grad,
-              borderRadius: 10
+              label: currentEx1rm || 'Estimated 1RM',
+              data: series1rm,
+              borderColor: grad,
+              backgroundColor: 'rgba(34, 211, 238, 0.08)',
+              tension: 0.35,
+              pointRadius: 3.5,
+              borderWidth: 3
             }]
           },
           options: {
             responsive: true,
             maintainAspectRatio: false,
-            indexAxis: 'y',
             plugins: { legend: { display: false } },
             scales: {
-              x: { grid: { color: 'rgba(148, 163, 184, 0.18)' } },
-              y: { grid: { display: false } }
+              y: { grid: { color: 'rgba(148, 163, 184, 0.18)' } },
+              x: { grid: { display: false } }
             }
           }
         });
       }
     } else {
-      const exercise1RM = charts.exercise1RM || charts.exerciseOneRM;
-      const exercises = exercise1RM ? (Array.isArray(exercise1RM.exercises) ? exercise1RM.exercises : Object.keys(exercise1RM.seriesByExercise || {})) : [];
-      
-      const currentEx = selectedExercise1rm || exercises[0] || '';
-      const series = currentEx && exercise1RM?.seriesByExercise ? exercise1RM.seriesByExercise[currentEx] : null;
-      const labels = exercise1RM?.labels || ['אימון 1', 'אימון 2', 'אימון 3', 'אימון 4'];
-      const dataPoints = Array.isArray(series) ? series : (exercise1RM ? labels.map(() => null) : [0, 0, 0, 0]);
+      if (chart1rmInst.current) {
+        try { chart1rmInst.current.destroy(); } catch {}
+        chart1rmInst.current = null;
+      }
+    }
 
-      const grad = ctx1.createLinearGradient(0, 0, 600, 0);
-      grad.addColorStop(0, '#22d3ee');
-      grad.addColorStop(1, '#a855f7');
+    // 2. Render Volume Chart
+    if (volumeCanvasRef.current && hasVolumeData) {
+      if (volumeChartInst.current) {
+        try { volumeChartInst.current.destroy(); } catch {}
+      }
+      const ctxV = volumeCanvasRef.current.getContext('2d');
+      const vLabels = volumeObj.labels;
+      const vData = volumeObj.data;
 
-      chart1rmInst.current = new Chart(ctx1, {
-        type: 'line',
+      const barGrad = ctxV.createLinearGradient(0, 0, 0, 320);
+      barGrad.addColorStop(0, 'rgba(248, 113, 113, 0.95)');
+      barGrad.addColorStop(1, 'rgba(168, 85, 247, 0.85)');
+
+      volumeChartInst.current = new Chart(ctxV, {
+        type: 'bar',
         data: {
-          labels,
+          labels: vLabels,
           datasets: [{
-            label: currentEx || 'Estimated 1RM',
-            data: dataPoints,
-            borderColor: grad,
-            backgroundColor: 'rgba(34, 211, 238, 0.08)',
-            tension: 0.35,
-            pointRadius: 3.5,
-            borderWidth: 3
+            label: 'Total Volume',
+            data: vData,
+            backgroundColor: barGrad,
+            borderRadius: 10
           }]
         },
         options: {
@@ -319,54 +351,42 @@ export function ProgressPage({ user }) {
           }
         }
       });
+    } else {
+      if (volumeChartInst.current) {
+        try { volumeChartInst.current.destroy(); } catch {}
+        volumeChartInst.current = null;
+      }
     }
 
-    // 2. Render Volume Chart
-    const ctxV = volumeCanvasRef.current.getContext('2d');
-    const volume = charts.volume || charts.volumeLoad;
-    const vLabels = volume?.labels?.length > 0 ? volume.labels : ['אימון 1', 'אימון 2', 'אימון 3', 'אימון 4'];
-    const vData = volume?.data?.length > 0 ? volume.data : [0, 0, 0, 0];
-
-    const barGrad = ctxV.createLinearGradient(0, 0, 0, 320);
-    barGrad.addColorStop(0, 'rgba(248, 113, 113, 0.95)');
-    barGrad.addColorStop(1, 'rgba(168, 85, 247, 0.85)');
-
-    volumeChartInst.current = new Chart(ctxV, {
-      type: 'bar',
-      data: {
-        labels: vLabels,
-        datasets: [{
-          label: 'Total Volume',
-          data: vData,
-          backgroundColor: barGrad,
-          borderRadius: 10
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { grid: { color: 'rgba(148, 163, 184, 0.18)' } },
-          x: { grid: { display: false } }
-        }
-      }
-    });
-
     return () => {
-      if (chart1rmInst.current) chart1rmInst.current.destroy();
-      if (volumeChartInst.current) volumeChartInst.current.destroy();
+      if (chart1rmInst.current) {
+        try { chart1rmInst.current.destroy(); } catch {}
+        chart1rmInst.current = null;
+      }
+      if (volumeChartInst.current) {
+        try { volumeChartInst.current.destroy(); } catch {}
+        volumeChartInst.current = null;
+      }
     };
-  }, [progressData, selectedExercise1rm, selectedDay1rm]);
+  }, [progressData, selectedExercise1rm, selectedDay1rm, has1rmData, hasVolumeData]);
 
   // Render Body Balance Radar Chart
   useEffect(() => {
     const canvas = balanceCanvasRef.current;
-    if (!canvas) return;
-    if (balanceChartInst.current) balanceChartInst.current.destroy();
+    if (!canvas || !hasBalanceData) {
+      if (balanceChartInst.current) {
+        try { balanceChartInst.current.destroy(); } catch {}
+        balanceChartInst.current = null;
+      }
+      return;
+    }
+
+    if (balanceChartInst.current) {
+      try { balanceChartInst.current.destroy(); } catch {}
+    }
 
     const ctx = canvas.getContext('2d');
-    const balance = computeBodyBalance(progressData, aiInsights);
+    const balance = bodyBalance;
     const labels = balance.groups.map(g => g.label);
     const safeData = balance.groups.map(g => g.score);
 
@@ -378,33 +398,30 @@ export function ProgressPage({ user }) {
     fillGrad.addColorStop(0, 'rgba(34, 211, 238, 0.25)');
     fillGrad.addColorStop(1, 'rgba(168, 85, 247, 0.12)');
 
-    // Custom Plugin to render a clear, glowing Center Point Dot at the exact center origin
     const centerPointDotPlugin = {
       id: 'centerPointDot',
       afterDatasetsDraw(chart) {
         if (!chart || !chart.chartArea) return;
-        const { chartArea, ctx } = chart;
+        const { chartArea, ctx: cCtx } = chart;
         const centerX = (chartArea.left + chartArea.right) / 2;
         const centerY = (chartArea.top + chartArea.bottom) / 2;
 
-        ctx.save();
-        // Glow aura
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, 7, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34, 211, 238, 0.28)';
-        ctx.fill();
+        cCtx.save();
+        cCtx.beginPath();
+        cCtx.arc(centerX, centerY, 7, 0, Math.PI * 2);
+        cCtx.fillStyle = 'rgba(34, 211, 238, 0.28)';
+        cCtx.fill();
 
-        // Exact Center Dot
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#22d3ee';
-        ctx.shadowColor = '#22d3ee';
-        ctx.shadowBlur = 6;
-        ctx.fill();
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = '#ffffff';
-        ctx.stroke();
-        ctx.restore();
+        cCtx.beginPath();
+        cCtx.arc(centerX, centerY, 4, 0, Math.PI * 2);
+        cCtx.fillStyle = '#22d3ee';
+        cCtx.shadowColor = '#22d3ee';
+        cCtx.shadowBlur = 6;
+        cCtx.fill();
+        cCtx.lineWidth = 1.5;
+        cCtx.strokeStyle = '#ffffff';
+        cCtx.stroke();
+        cCtx.restore();
       }
     };
 
@@ -429,7 +446,7 @@ export function ProgressPage({ user }) {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        events: [], // Disable Chart.js native auto-hover so custom mousemove handler controls hover zones precisely
+        events: [],
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -505,7 +522,7 @@ export function ProgressPage({ user }) {
       const dy = mouseY - centerY;
       const distToCenter = Math.sqrt(dx * dx + dy * dy);
 
-      // 1. Exact Center Dot Hover: ONLY triggers when cursor is directly on the middle point dot itself (8px radius)
+      // 1. Exact Center Dot Hover
       const centerRadius = 8;
       if (distToCenter <= centerRadius) {
         const allPoints = (chart.data?.labels || []).map((_, i) => ({
@@ -518,7 +535,7 @@ export function ProgressPage({ user }) {
         return;
       }
 
-      // 2. Specific Outer Muscle Point Hover: ONLY triggers when cursor is directly on an outer trained point (score > 0)
+      // 2. Specific Outer Muscle Point Hover
       const meta = chart.getDatasetMeta(0);
       if (meta && Array.isArray(meta.data)) {
         let nearestIndex = -1;
@@ -527,7 +544,6 @@ export function ProgressPage({ user }) {
         meta.data.forEach((element, i) => {
           if (!element) return;
           const score = safeData[i] || 0;
-          // Untrained muscles (score = 0) sit at the center origin, so ignore them for individual outer point hover!
           if (score <= 0) return;
 
           const px = element.x;
@@ -569,9 +585,12 @@ export function ProgressPage({ user }) {
     return () => {
       canvas.removeEventListener('mousemove', handleCanvasMouseMove);
       canvas.removeEventListener('mouseleave', handleCanvasMouseLeave);
-      if (balanceChartInst.current) balanceChartInst.current.destroy();
+      if (balanceChartInst.current) {
+        try { balanceChartInst.current.destroy(); } catch {}
+        balanceChartInst.current = null;
+      }
     };
-  }, [progressData, aiInsights]);
+  }, [progressData, aiInsights, hasBalanceData]);
 
   // Calendar Helpers
   const normalizedHeat = coerceHeatmapYear(progressData?.heatmap);
@@ -681,8 +700,6 @@ export function ProgressPage({ user }) {
   }
 
   // 1RM Exercises & Days
-  const exercise1RMObj = progressData?.charts?.exercise1RM || progressData?.charts?.exerciseOneRM;
-  const availableExercises = exercise1RMObj ? (Array.isArray(exercise1RMObj.exercises) ? exercise1RMObj.exercises : Object.keys(exercise1RMObj.seriesByExercise || {})) : [];
   const workoutDays30 = Array.isArray(progressData?.overview?.workoutDays30) ? progressData.overview.workoutDays30 : [];
 
   // PRs & Recommendations
@@ -804,9 +821,17 @@ export function ProgressPage({ user }) {
                 </div>
               </div>
 
-              <div className="weight-chart">
-                <canvas ref={weightCanvasRef} />
-              </div>
+              {!hasWeightData ? (
+                <div className="empty-chart-state">
+                  <span className="empty-state-icon">⚖️</span>
+                  <h4 className="empty-state-title">אין עדיין נתוני משקל גוף</h4>
+                  <p className="empty-state-subtitle">תעד את משקל הגוף שלך ביומן האימונים כדי לראות את גרף ההתקדמות 📈</p>
+                </div>
+              ) : (
+                <div className="weight-chart">
+                  <canvas ref={weightCanvasRef} />
+                </div>
+              )}
             </div>
 
             {/* Calendar & Calories Stack */}
@@ -891,9 +916,17 @@ export function ProgressPage({ user }) {
                 </div>
               </div>
 
-              <div className="chart-box">
-                <canvas ref={chart1rmRef} />
-              </div>
+              {!has1rmData ? (
+                <div className="empty-chart-state">
+                  <span className="empty-state-icon">🏋️</span>
+                  <h4 className="empty-state-title">אין עדיין נתוני כוח מירבי (1RM)</h4>
+                  <p className="empty-state-subtitle">תעד תרגילים, סטים ומשקלים ביומן כדי לחשב את שיאי הכוח שלך ⚡</p>
+                </div>
+              ) : (
+                <div className="chart-box">
+                  <canvas ref={chart1rmRef} />
+                </div>
+              )}
             </div>
 
             {/* Total Volume Load Card */}
@@ -902,9 +935,17 @@ export function ProgressPage({ user }) {
                 <div className="card-title">Total Volume Load</div>
                 <div className="card-subtitle text-muted">חזרות × משקל לכל אימון</div>
               </div>
-              <div className="chart-box chart-box--volume">
-                <canvas ref={volumeCanvasRef} />
-              </div>
+              {!hasVolumeData ? (
+                <div className="empty-chart-state">
+                  <span className="empty-state-icon">📊</span>
+                  <h4 className="empty-state-title">אין עדיין נתוני נפח עבודה</h4>
+                  <p className="empty-state-subtitle">תעד אימונים ביומן כדי לראות את גרף עומס העבודה והנפח לאורך זמן 💪</p>
+                </div>
+              ) : (
+                <div className="chart-box chart-box--volume">
+                  <canvas ref={volumeCanvasRef} />
+                </div>
+              )}
             </div>
           </div>
         </section>
@@ -1017,8 +1058,8 @@ export function ProgressPage({ user }) {
             </>
           ) : (
             <div className="card pr-card is-empty-pr" style={{ textAlign: 'center', padding: '40px 20px' }}>
-              <div className="pr-title">אין הישגים בקטגוריה זו</div>
-              <div className="pr-meta">תעד אימונים בלוג האימונים וכאן יופיעו ההישגים שלך 🏋️</div>
+              <div className="pr-title">אין עדיין שיאים אישיים במערכת</div>
+              <div className="pr-meta">תעד אימונים ותרגילים ביומן האימונים וכאן יופיעו ההישגים שלך 🏋️</div>
             </div>
           )}
         </section>
@@ -1040,11 +1081,19 @@ export function ProgressPage({ user }) {
                 <div className="card-title">איזון גוף</div>
                 <div className="card-subtitle text-muted">ציון איזון 0–10 · נפח עבודה שנצבר בכל האימונים</div>
               </div>
-              <div className="balance-wrap">
-                <div className="balance-box">
-                  <canvas ref={balanceCanvasRef} />
+              {!hasBalanceData ? (
+                <div className="empty-chart-state">
+                  <span className="empty-state-icon">🧬</span>
+                  <h4 className="empty-state-title">אין עדיין נתוני איזון שרירי</h4>
+                  <p className="empty-state-subtitle">תעד אימונים לקבוצות שרירים שונות כדי להפיק מפת איזון אישית 🎯</p>
                 </div>
-              </div>
+              ) : (
+                <div className="balance-wrap">
+                  <div className="balance-box">
+                    <canvas ref={balanceCanvasRef} />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Smart Recommendations */}
