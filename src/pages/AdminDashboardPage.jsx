@@ -194,7 +194,7 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
   const isUserAdminRow = (u) => {
     const email = (u?.email || u?.username || '').toLowerCase().trim();
     const role = (u?.role || u?.userRole || '').toLowerCase().trim();
-    return role === 'admin' || email.includes('orsadof') || email === 'admin@fitmentor.com';
+    return role === 'admin' || email === 'orsadof@gmail.com' || email === 'admin@fitmentor.com';
   };
 
   const isTestOrDebugUser = (u) => {
@@ -202,122 +202,49 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
     return email.includes('check') || email.includes('test') || email.includes('nosymbols') || email.includes('user12345');
   };
 
-  const getSystemRegisteredUsers = () => {
-    const usersMap = new Map();
-
-    // Real system non-admin user (orhupro@gmail.com)
-    const isOrhuproBlocked = localStorage.getItem('fitmentor_blocked_orhupro@gmail.com') === 'true';
-    usersMap.set('orhupro@gmail.com', {
-      username: 'orhupro',
-      name: 'Or Hupro',
-      email: 'orhupro@gmail.com',
-      joined: '2026-07-20',
-      status: isOrhuproBlocked ? 'blocked' : 'active',
-      workoutCount: 2
-    });
-
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('fitmentor_user_logs_')) {
-          const uEmail = key.replace('fitmentor_user_logs_', '').toLowerCase().trim();
-          if (uEmail && !isUserAdminRow({ email: uEmail })) {
-            let logCount = 0;
-            try {
-              const raw = localStorage.getItem(key);
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) logCount = parsed.length;
-              else if (typeof parsed === 'object') logCount = Object.keys(parsed).length;
-            } catch { }
-
-            const isBlocked = localStorage.getItem(`fitmentor_blocked_${uEmail}`) === 'true';
-            usersMap.set(uEmail, {
-              username: uEmail.split('@')[0],
-              name: uEmail.split('@')[0],
-              email: uEmail,
-              joined: '2026-07-22',
-              status: isBlocked ? 'blocked' : 'active',
-              workoutCount: logCount || 2
-            });
-          }
-        }
-      }
-    } catch { }
-    return Array.from(usersMap.values());
-  };
-
   const getRealChartsData = (users, apiCharts) => {
-    if (apiCharts && apiCharts.dailyActivity && apiCharts.joinTrend) {
-      return apiCharts;
-    }
-
-    const today = new Date();
-    const dayNames = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
-    const last7DaysLabels = [];
-    const dateToDayIndexMap = new Map();
-
-    for (let d = 6; d >= 0; d--) {
-      const targetDate = new Date(today);
-      targetDate.setDate(today.getDate() - d);
-      const ymd = targetDate.toISOString().split('T')[0];
-      const dayName = dayNames[targetDate.getDay()];
-
-      const arrIdx = 6 - d;
-      last7DaysLabels.push(dayName);
-      dateToDayIndexMap.set(ymd, arrIdx);
-    }
-
-    let totalLogins = 0;
-    const last7DaysCounts = [0, 0, 0, 0, 0, 0, 0];
-
-    // Scan actual unique user login dates from system storage
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('fitmentor_user_logins_')) {
-          const uEmail = key.replace('fitmentor_user_logins_', '').toLowerCase().trim();
-          if (uEmail && !isUserAdminRow({ email: uEmail })) {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const dates = JSON.parse(raw);
-              if (Array.isArray(dates)) {
-                const uniqueDates = Array.from(new Set(dates));
-                uniqueDates.forEach(ymd => {
-                  if (dateToDayIndexMap.has(ymd)) {
-                    const idx = dateToDayIndexMap.get(ymd);
-                    last7DaysCounts[idx]++;
-                    totalLogins++;
-                  }
-                });
-              }
-            }
-          }
-        }
+    // 1. Join Trend from Cloud or dynamically computed from actual Cognito registration dates
+    let joinTrend = apiCharts?.joinTrend;
+    if (!joinTrend || !Array.isArray(joinTrend.labels) || joinTrend.labels.length === 0) {
+      const now = new Date();
+      const monthKeys = [];
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+        monthKeys.push(key);
       }
-    } catch { }
+      const joinCounts = Object.fromEntries(monthKeys.map(k => [k, 0]));
+      users.forEach(u => {
+        if (!u?.joined && !u?.createdAt) return;
+        const key = String(u.joined || u.createdAt).substring(0, 7);
+        if (key in joinCounts) {
+          joinCounts[key] += 1;
+        }
+      });
+      joinTrend = {
+        labels: monthKeys,
+        data: monthKeys.map(k => joinCounts[k])
+      };
+    }
 
-    let mayCount = 0;
-    let juneCount = 0;
-    let julyCount = 0;
-
-    users.forEach(u => {
-      const joinYm = String(u.joined || u.createdAt || '').substring(0, 7);
-      if (joinYm <= '2026-05') mayCount++;
-      else if (joinYm <= '2026-06') juneCount++;
-      else if (joinYm) julyCount++;
-    });
+    // 2. Daily Activity from Cloud API
+    let dailyActivity = apiCharts?.dailyActivity;
+    if (!dailyActivity || !Array.isArray(dailyActivity.labels) || dailyActivity.labels.length === 0) {
+      const dayKeys = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        dayKeys.push(d.toISOString().split('T')[0]);
+      }
+      dailyActivity = {
+        labels: dayKeys,
+        data: dayKeys.map(() => 0)
+      };
+    }
 
     return {
-      totalWorkouts: 0,
-      totalLogins,
-      joinTrend: {
-        labels: ['מאי', 'יוני', 'יולי'],
-        data: [mayCount, mayCount + juneCount, mayCount + juneCount + julyCount]
-      },
-      dailyActivity: {
-        labels: last7DaysLabels,
-        data: last7DaysCounts
-      }
+      joinTrend,
+      dailyActivity
     };
   };
 
@@ -337,31 +264,19 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
         } catch { }
       }
 
-      if (data?.statusCode && data.statusCode >= 400) {
-        throw new Error(data.message || 'אין הרשאת אדמין');
+      if (!data || (data?.statusCode && data.statusCode >= 400)) {
+        throw new Error(data?.message || data?.error || 'שגיאה בקבלת נתונים מהשרת ב-AWS');
       }
 
       const statsObj = data?.stats || {};
       const rawUsers = Array.isArray(data?.users) ? data.users : [];
       const nonAdminUsers = rawUsers.filter(u => !isUserAdminRow(u) && !isTestOrDebugUser(u));
 
-      // Always include the real client account (orhupro@gmail.com) if not present
-      if (!nonAdminUsers.some(u => (u.email || '').toLowerCase().trim() === 'orhupro@gmail.com')) {
-        const isBlocked = localStorage.getItem('fitmentor_blocked_orhupro@gmail.com') === 'true';
-        nonAdminUsers.unshift({
-          username: 'orhupro',
-          name: 'Or Hupro',
-          email: 'orhupro@gmail.com',
-          joined: '2026-07-20',
-          status: isBlocked ? 'blocked' : 'active'
-        });
-      }
-
       const computedChartData = getRealChartsData(nonAdminUsers, data?.charts);
 
       const finalStats = {
-        usersRegistered: nonAdminUsers.length,
-        activeToday: nonAdminUsers.filter(u => u.status === 'active').length,
+        usersRegistered: typeof statsObj.usersRegistered === 'number' ? statsObj.usersRegistered : nonAdminUsers.length,
+        activeToday: typeof statsObj.activeToday === 'number' ? statsObj.activeToday : nonAdminUsers.filter(u => u.status === 'active').length,
         workoutsSaved: typeof statsObj.workoutsSaved === 'number' ? statsObj.workoutsSaved : 0,
         aiCallsTotal: typeof statsObj.aiCallsTotal === 'number' ? statsObj.aiCallsTotal : 0
       };
@@ -373,6 +288,9 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
       console.error('Failed to fetch admin dashboard from AWS:', err);
       const errMsg = err?.message || 'לא ניתן לתקשר עם בסיס הנתונים ב-AWS';
       setApiError(errMsg);
+      setUsersList([]);
+      setStats({ usersRegistered: 0, activeToday: 0, workoutsSaved: 0, aiCallsTotal: 0 });
+      initCharts({ joinTrend: { labels: [], data: [] }, dailyActivity: { labels: [], data: [] } });
       if (showToast) showToast(`שגיאה בטעינת נתונים מ-AWS: ${errMsg}`, 'error');
     } finally {
       setLoading(false);
@@ -576,21 +494,15 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
 
   const executeUserBlock = async (username, blocked) => {
     setIsSubmittingBlock(true);
+    const storedToken = localStorage.getItem('fitmentor_idToken') || localStorage.getItem('fitmentor_accessToken') || token;
     try {
       const targetUser = usersList.find(u => u.username === username || u.email === username);
       const email = targetUser?.email || username;
-      const cleanEmail = email.toLowerCase().trim();
 
-      // Persist block status in system storage
-      if (blocked) {
-        localStorage.setItem(`fitmentor_blocked_${cleanEmail}`, 'true');
-        localStorage.setItem(`fitmentor_blocked_${username.toLowerCase().trim()}`, 'true');
-      } else {
-        localStorage.removeItem(`fitmentor_blocked_${cleanEmail}`);
-        localStorage.removeItem(`fitmentor_blocked_${username.toLowerCase().trim()}`);
-      }
+      // 1. Live call to AWS cloud
+      await fitmentorApi.adminSetUserBlocked(adminEmail, username, blocked, storedToken);
 
-      // Instant UI state update
+      // 2. Update UI state on successful response
       setUsersList(prev => prev.map(u => {
         if (u.username === username || u.email === email) {
           return { ...u, status: blocked ? 'blocked' : 'active' };
@@ -602,17 +514,11 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
       setConfirmModal({ isOpen: false, user: null });
 
       if (showToast) {
-        showToast(blocked ? `המשתמש ${email} נחסם בהצלחה` : `המשתמש ${email} הופעל בהצלחה`);
+        showToast(blocked ? `המשתמש ${email} נחסם בהצלחה ב-AWS ✅` : `המשתמש ${email} הופעל בהצלחה ב-AWS ✅`);
       }
-
-      // Try background API call silently
-      fitmentorApi.adminSetUserBlocked(adminEmail, username, blocked, token).catch(err => {
-        console.warn('API adminSetUserBlocked background log:', err);
-      });
-
     } catch (err) {
       console.error('Failed to block/unblock user:', err);
-      if (showToast) showToast('שגיאה בעדכון סטטוס משתמש', 'error');
+      if (showToast) showToast(err?.message || 'שגיאה בעדכון סטטוס משתמש ב-AWS', 'error');
     } finally {
       setIsSubmittingBlock(false);
     }
@@ -736,7 +642,7 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
                 <span className="chart-icon-badge icon-gold">
                   <TrendLineSVG />
                 </span>
-                <span>מגמת הצטרפות (שלושה חודשים אחרונים)</span>
+                <span>מגמת הצטרפות (חצי שנה אחרונה)</span>
               </h3>
             </div>
             <div className="chart-wrapper">
