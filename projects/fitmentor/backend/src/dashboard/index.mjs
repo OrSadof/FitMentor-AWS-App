@@ -645,8 +645,7 @@ function extractChatReply(raw) {
 }
 
 const FAST_AI_MODELS = [
-  "deepseek/deepseek-chat",
-  "deepseek/deepseek-r1"
+  "deepseek/deepseek-v4-flash-0731"
 ];
 const API_TIMEOUT_MS = 25000;
 const MAX_OUTPUT_TOKENS = 4500;
@@ -679,28 +678,28 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
 async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null, maxTokensOverride = null) {
   const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
-  const apiKey = deepseekKey || openRouterKey;
+  const apiKey = openRouterKey || deepseekKey;
 
   if (!apiKey) {
-    console.error("Missing DEEPSEEK_API_KEY / OPENROUTER_API_KEY for AI execution.");
+    console.error("Missing API key for AI execution.");
     if (isChatCall) {
       return JSON.stringify({
-        reply: "מפתח ה-API של DeepSeek חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
+        reply: "מפתח ה-API חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
         updatedPlanHtml: null,
         uiAction: null,
       });
     }
     return `
 <div class="ai-plan-result">
-  <h3>שגיאה בתקשורת עם DeepSeek AI</h3>
-  <p>מפתח ה-API של DeepSeek חסר במערכת. אנא הגדר אותו ב-AWS Lambda.</p>
+  <h3>שגיאה בתקשורת עם AI</h3>
+  <p>מפתח ה-API חסר במערכת. אנא הגדר אותו ב-AWS Lambda.</p>
 </div>
 `.trim();
   }
 
   const timeoutMs = isChatCall ? 18000 : (systemPromptOverride ? 12000 : 30000);
   const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 2500 : MAX_OUTPUT_TOKENS);
-  const modelsToTry = FAST_AI_MODELS;
+  const model = "deepseek/deepseek-v4-flash-0731";
   let lastErr = null;
 
   let systemPrompt = "You are DeepSeek, an elite master strength and conditioning sports scientist. Your exercise selections, per-set descending weights, and rich biomechanical technique instructions must be 100% complete and accurate. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגש טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, clean HTML for the workout plan.";
@@ -711,71 +710,64 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
     systemPrompt = "You are FitMentor AI powered by DeepSeek, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON.";
   }
 
-  const isDeepSeekDirect = Boolean(deepseekKey);
-  const endpoint = isDeepSeekDirect ? "https://api.deepseek.com/chat/completions" : "https://openrouter.ai/api/v1/chat/completions";
+  const endpoint = "https://openrouter.ai/api/v1/chat/completions";
+  const t0 = Date.now();
 
-  for (let idx = 0; idx < modelsToTry.length; idx++) {
-    const rawModel = modelsToTry[idx];
-    const model = isDeepSeekDirect ? "deepseek-chat" : rawModel;
-    const t0 = Date.now();
+  try {
+    console.log(`[DEEPSEEK_CALL_START] endpoint=${endpoint}, model=${model}, isChatCall=${isChatCall}`);
+    const requestPayload = {
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: promptText }
+      ],
+      max_tokens: maxTokens,
+      temperature: systemPromptOverride ? 0.2 : 0.4
+    };
 
-    try {
-      console.log(`[DEEPSEEK_CALL_START] endpoint=${endpoint}, model=${model}, isChatCall=${isChatCall}`);
-      const requestPayload = {
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: promptText }
-        ],
-        max_tokens: maxTokens,
-        temperature: systemPromptOverride ? 0.2 : 0.4
-      };
+    const response = await fetchWithHardTimeout(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://fitmentor.app",
+        "X-Title": "FitMentor"
+      },
+      body: JSON.stringify(requestPayload)
+    }, timeoutMs);
 
-      const response = await fetchWithHardTimeout(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://fitmentor.app",
-          "X-Title": "FitMentor"
-        },
-        body: JSON.stringify(requestPayload)
-      }, timeoutMs);
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        console.warn(`[DEEPSEEK_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
-        throw new Error(`DeepSeek API returned HTTP ${response.status} for ${model}`);
-      }
-
-      const data = await response.json();
-      const msg = data.choices?.[0]?.message;
-      const text = (typeof msg?.content === "string" && msg.content.trim().length > 0)
-        ? msg.content
-        : (typeof msg?.reasoning === "string" && msg.reasoning.trim().length > 0
-          ? msg.reasoning
-          : (typeof data.choices?.[0]?.text === "string" ? data.choices[0].text : ""));
-
-      if (typeof text === "string" && text.trim().length > 0) {
-        console.log(`[DEEPSEEK_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
-        return text;
-      }
-
-      throw new Error(`Empty response returned from DeepSeek model ${model}`);
-    } catch (err) {
-      lastErr = err;
-      console.warn(`[DEEPSEEK_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
-      if (isDeepSeekDirect) break;
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      console.warn(`[DEEPSEEK_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
+      throw new Error(`AI API returned HTTP ${response.status} for ${model}`);
     }
+
+    const data = await response.json();
+    const msg = data.choices?.[0]?.message;
+    const text = (typeof msg?.content === "string" && msg.content.trim().length > 0)
+      ? msg.content
+      : (typeof msg?.reasoning === "string" && msg.reasoning.trim().length > 0
+        ? msg.reasoning
+        : (typeof data.choices?.[0]?.text === "string" ? data.choices[0].text : ""));
+
+    if (typeof text === "string" && text.trim().length > 0) {
+      console.log(`[DEEPSEEK_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
+      return text;
+    }
+
+    throw new Error(`Empty response returned from model ${model}`);
+  } catch (err) {
+    lastErr = err;
+    console.warn(`[DEEPSEEK_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
   }
 
-  // Handle final failure - no fallback to other AI providers!
+  // Handle final failure - strictly no fallback to any other model!
   if (!isChatCall) {
-    throw new Error(lastErr?.message || "ה-API של DeepSeek נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
+    throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
   }
 
   return JSON.stringify({
-    reply: `שגיאה בתקשורת עם DeepSeek AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
+    reply: `שגיאה בתקשורת עם ה-AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
     updatedPlanHtml: null,
     uiAction: null
   });
