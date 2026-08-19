@@ -114,11 +114,163 @@ function parseSetWeightsFromLine(line) {
   return null;
 }
 
+/* ─── Exercise Biomechanical Technique Knowledge Base ───
+   Guarantees 100% technique cues for every single exercise across all muscle groups,
+   ensuring the "דגש טכניקה" box is ALWAYS rendered with professional coaching cues. */
+export function getExerciseTechniqueCue(title) {
+  const t = String(title || '').toLowerCase().trim();
+  if (!t) return 'שמור על גב ישר, ליבה אסופה וטווח תנועה מלא ומבוקר לאורך כל התרגיל.';
+
+  // Chest / חזה
+  if (t.includes('דמבל') || t.includes('משקולות יד') || t.includes('dumbbell bench')) {
+    if (t.includes('שיפוע חיובי') || t.includes('incline')) {
+      return 'כוון את הספסל לזווית של 30-45 מעלות, הצמד שכמות ודחוף את המשקולות מעל החזה העליון תוך הורדה מבוקרת.';
+    }
+    if (t.includes('שיפוע שלילי') || t.includes('decline')) {
+      return 'שכב בשיפוע שלילי יציב, פתח מרפקים ב-45 מעלות לגוף ולחץ מעל החזה התחתון תוך שליטה בירידה.';
+    }
+    return 'שכב על ספסל שטוח, החזק משקולת בכל יד בגובה החזה. דחוף את המשקולות כלפי מעלה עד שהזרועות כמעט ישרות, והורד בחזרה באיטיות תוך מתיחת החזה.';
+  }
+  if (t.includes('לחיצת חזה') || t.includes('bench press') || t.includes('בנץ')) {
+    if (t.includes('שיפוע חיובי') || t.includes('incline')) {
+      return 'הצמד שכמות לספסל בשיפוע חיובי, הורד את המוט לחזה העליון ודחוף בעוצמה תוך נעילת עקבים ברצפה.';
+    }
+    return 'הצמד שכמות לספסל, הורד את המוט בצורה מבוקרת לקו הפטמות/מרכז החזה, ודחוף בעוצמה תוך שמירה על עמוד שדרה יציב.';
+  }
+  if (t.includes('פרפר') || t.includes('fly') || t.includes('קרוסאובר') || t.includes('crossover')) {
+    return 'שמור על כיפוף קל וקבוע במרפקים, פתח את הידיים למתיחה מרבית של סיבי החזה, וכווץ במרכז התנועה לשנייה.';
+  }
+  if (t.includes('מקבילים') || t.includes('dips')) {
+    return 'הטה את הגו מעט לפנים למיקוד בחזה, רד עד שזווית המרפק מגיעה ל-90 מעלות, ודחוף חזרה מבלי לנעול מרפקים באגרסיביות.';
+  }
+  if (t.includes('שכיבות סמיכה') || t.includes('push up') || t.includes('push-up') || t.includes('פושאפס')) {
+    return 'שמור על גוף ישר כקרש ללא שקיעת האגן, רד עד נגיעה קלה של החזה ברצפה ודחוף דרך כפות הידיים.';
+  }
+
+  // Back / גב
+  if (t.includes('פולי עליון') || t.includes('lat pull') || t.includes('lat pulldown') || t.includes('חתירה עליונה')) {
+    return 'שב זקוף עם חזה מורם וגב מעט נטוי לאחור. אחוז ברוחב מעט רחב מכתפיים ומשוך את המוט/ידית לחזה העליון תוך כיווץ שכמות מקסימלי.';
+  }
+  if (t.includes('מתח') || t.includes('pull up') || t.includes('chin up')) {
+    return 'התחל מתלייה מלאה, משוך מתוך שרירי הגב והורד שכמות מטה עד שהסנטר עובר את המוט, ורד בשליטה מלאה.';
+  }
+  if (t.includes('חתירה במוט') || t.includes('bent over row') || t.includes('barbell row')) {
+    return 'הטה את הגב לפנים ב-45 מעלות עם ברכיים כפופות קלות וגב ניטרלי. משוך את המוט לכיוון הטבור תוך הצמדת מרפקים לגוף.';
+  }
+  if (t.includes('חתירה במשקולת') || t.includes('חתירה עם משקולת') || t.includes('one arm row') || t.includes('חתירה ביד אחת')) {
+    return 'הנח ברך ויד על הספסל לתמיכה, שמור על גב מקביל לרצפה ומשוך את המשקולת לכיוון המותן תוך הימנעות מסיבוב הגו.';
+  }
+  if (t.includes('חתירה') || t.includes('row') || t.includes('t-bar') || t.includes('טי בר')) {
+    return 'שב או עמוד ביציבה יציבה, שמור על חזה פתוח ומשוך את המשקל אל הגוף תוך קירוב שכמות מלא ומבוקר.';
+  }
+  if (t.includes('דדליפט') || t.includes('deadlift')) {
+    if (t.includes('רומני') || t.includes('rdl') || t.includes('romanian')) {
+      return 'שלח את הישבן לאחור עם ברכיים כפופות קלות בלבד, מתח את הירך האחורית ושמור על המוט צמוד לרגליים וגב ישר לחלוטין.';
+    }
+    if (t.includes('סומו') || t.includes('sumo')) {
+      return 'עמוד בפיסוק רחב כשאצבעות פונות החוצה, רד עם אגן נמוך וחזה זקוף, ודחוף את הקרקע דרך העקבים.';
+    }
+    return 'עמוד כשהמוט צמוד לשוקיים, אחוז ברוחב כתפיים, הרם את החזה ודחוף את הרצפה תוך נעילת גב ישר ורציף לאורך כל התנועה.';
+  }
+  if (t.includes('פולאובר') || t.includes('pullover') || t.includes('משיכת פולי ישר') || t.includes('straight arm')) {
+    return 'שמור על זרועות כמעט ישרות, משוך מקשת עליונה למטה לכיוון הירכיים תוך בידוד ממוקד של שריר הרחב-גבי.';
+  }
+
+  // Legs / רגליים
+  if (t.includes('סקוואט') || t.includes('squat')) {
+    if (t.includes('בולגרי') || t.includes('bulgarian') || t.includes('פיצול')) {
+      return 'הנח רגל אחורית על ספסל, רד עם הרגל הקדמית לעומק של 90 מעלות תוך שמירה על יציבה זקופה וברך יציבה.';
+    }
+    if (t.includes('גובלט') || t.includes('goblet')) {
+      return 'החזק משקולת צמודה לחזה, רד לעומק מקביל לקרקע תוך דחיפת הברכיים החוצה ושמירה על מרפקים בין הברכיים.';
+    }
+    if (t.includes('קדמי') || t.includes('front')) {
+      return 'שמור על מרפקים גבוהים מקבילים לרצפה וחזה פתוח, רד עם גו זקוף ודחוף חזרה דרך מרכז כף הרגל.';
+    }
+    return 'עמוד בפיסוק ברוחב כתפיים, שלח את הישבן לאחור ורד לעומק מקביל לרצפה תוך שמירה על ברכיים בקו אצבעות הרגליים ועקב מוצמד.';
+  }
+  if (t.includes('לחיצת רגליים') || t.includes('leg press')) {
+    return 'הנח את כפות הרגליים במרכז המשטח, הורד את המשקל עד לזווית של 90 מעלות בברכיים מבלי לנתק את הגב התחתון מהמשענת.';
+  }
+  if (t.includes('מכרעים') || t.includes('לאנג') || t.includes('lunge')) {
+    return 'בצע צעד מבוקר קדימה או אחורה, רד עד ששתי הברכיים ב-90 מעלות תוך שמירה על גו זקוף ושיווי משקל יציב.';
+  }
+  if (t.includes('פשיטת ברכיים') || t.includes('פשיטת רגליים') || t.includes('leg extension')) {
+    return 'כוון את המכשיר כך שציר הסיבוב מול הברך, ישר את הרגליים למעלה לכיווץ שיא של הארבע-ראשי ורד באיטיות.';
+  }
+  if (t.includes('כפיפת ברכיים') || t.includes('כפיפת רגליים') || t.includes('leg curl')) {
+    return 'הצמד את הירכיים לכרית, כופף את העקבים לעבר הישבן תוך כיווץ מלא של שרירי הירך האחורית, וחזור בשליטה מלאה.';
+  }
+  if (t.includes('היפ תראסט') || t.includes('hip thrust') || t.includes('גשר אגן')) {
+    return 'השען את השכמות על הספסל, דחוף את האגן כלפי מעלה דרך העקבים וכווץ את הישבן בעוצמה בשיא הגובה ללא הקשתת יתר של הגב.';
+  }
+  if (t.includes('תאומים') || t.includes('עקבים') || t.includes('calf')) {
+    return 'דחוף דרך כריות כפות הרגליים למעלה לעלייה מלאה, החזק לשנייה בשיא הכיווץ, ורד למתיחה עמוקה ואיטית.';
+  }
+
+  // Shoulders / כתפיים
+  if (t.includes('לחיצת כתפיים') || t.includes('shoulder press') || t.includes('overhead press') || t.includes('פרס')) {
+    if (t.includes('ארנולד') || t.includes('arnold')) {
+      return 'התחל כשהמשקולות מול הפנים וכפות הידיים פונות אליך, סובב את פרקי הידיים החוצה תוך כדי לחיצה מעלה עד נעילה מבוקרת.';
+    }
+    return 'שב או עמוד בגו זקוף, החזק את המשקולות בגובה האוזניים ולחץ ישירות מעל הראש עד יישור כמעט מלא ללא הקשתת הגב התחתון.';
+  }
+  if (t.includes('הרחקה לצדדים') || t.includes('lateral raise') || t.includes('הרחקת זרועות')) {
+    return 'הרם את המשקולות לצדדים בגובה הכתפיים עם כיפוף קל וקבוע במרפקים, והורד באיטיות ללא תנופת גוף.';
+  }
+  if (t.includes('הרחקה אופקית') || t.includes('כתף אחורית') || t.includes('rear delt') || t.includes('פייס פול') || t.includes('face pull')) {
+    return 'משוך את החבל/ידיות לעבר גובה העיניים והמצח תוך סיבוב חיצוני של הכתפיים וקירוב שכמות מודגש.';
+  }
+  if (t.includes('הרמה לפנים') || t.includes('front raise')) {
+    return 'הרם את המשקולת קדימה עד לגובה העיניים תוך שמירה על שרירי ליבה דרוכים וירידה מבוקרת.';
+  }
+  if (t.includes('חתירה לחזה') || t.includes('upright row')) {
+    return 'משוך את המשקל מעלה כשהמרפקים מובילים את התנועה ונשארים גבוהים מכפות הידיים בכל שלבי ההרמה.';
+  }
+
+  // Arms / זרועות
+  if (t.includes('יד קדמית') || t.includes('כפיפת מרפקים') || t.includes('bicep') || t.includes('בייספס') || t.includes('פטישים') || t.includes('hammer curl')) {
+    if (t.includes('פטיש') || t.includes('hammer')) {
+      return 'אחוז במשקולות כשאגודלים פונים מעלה (אחיזה ניטרלית), הרם ללא תנופת מרפקים והורד בשליטה מלאה.';
+    }
+    if (t.includes('פריצ\'ר') || t.includes('כומר') || t.includes('preacher')) {
+      return 'הנח את הזרועות במלואן על כרית הכומר, הרם את המוט/משקולת עד כיווץ מלא והורד למתיחה מבוקרת ללא היפר-אקסטנציה.';
+    }
+    return 'הצמד את המרפקים לצידי המותניים, הרם את המשקל מתוך שריר הזרוע בלבד תוך כיווץ שיא, והורד באיטיות ללא נדנוד הגוף.';
+  }
+  if (t.includes('יד אחורית') || t.includes('פשיטת מרפקים') || t.includes('tricep') || t.includes('טרייספס') || t.includes('פושדאון') || t.includes('pushdown')) {
+    if (t.includes('צרפתית') || t.includes('skull') || t.includes('לחיצה צרפתית')) {
+      return 'שכב על ספסל, שמור על זרועות אנכיות ויציבות, כופף את המרפקים לעבר המצח/מאחורי הראש וישר בחזרה מתוך היד האחורית.';
+    }
+    if (t.includes('קיקבאק') || t.includes('kickback')) {
+      return 'הטה גו לפנים, נעל את המרפק בגובה המותן, וישר את הזרוע לאחור עד נעילה מלאה וכיווץ חד של התלת-ראשי.';
+    }
+    return 'נעל את המרפקים צמודים לגוף, ישר את הידיים מטה עד נעילה מלאה ומבוקרת של שריר היד האחורית, וחזור באיטיות לקו החזה.';
+  }
+
+  // Core / ליבה ובטן
+  if (t.includes('פלאנק') || t.includes('בטן סטטית') || t.includes('plank')) {
+    return 'הישען על האמות וכריות כפות הרגליים, שמור על קו ישר מקודקוד ועד עקבים, כווץ בטן וישבן והימנע משקיעת האגן מטה.';
+  }
+  if (t.includes('כפיפות בטן') || t.includes('בטן') || t.includes('crunch') || t.includes('גלגלת') || t.includes('ab wheel')) {
+    return 'התמקד בקירוב הצלעות אל האגן תוך כיווץ יזום של שרירי הבטן, ונשוף את האוויר במלואו בשיא התנועה.';
+  }
+  if (t.includes('הרמת רגליים') || t.includes('leg raise') || t.includes('ברכיים לחזה')) {
+    return 'תלה על מתח או שכב על הגב, הרם את הרגליים/ברכיים תוך גלגול קל של האגן מעלה לשמירה על מתח תמידי בבטן התחתונה.';
+  }
+
+  // Aerobic / Warmup
+  if (t.includes('ריצה') || t.includes('הליכון') || t.includes('treadmill') || t.includes('אופניים') || t.includes('חתירה אירובית')) {
+    return 'שמור על קצב נשימה סדיר, גב זקוף ונחיתה רכה על מרכז כף הרגל תוך שמירה על דופק יציב בטווח המטרה.';
+  }
+
+  return 'בצע את התנועה בטווח תנועה מלא ומבוקר, שמור על גב ישר וליבה אסופה, והקפד על נשימה סדירה לאורך כל הסט.';
+}
+
 /* ─── Exercise Parser & Structured Formatter ───
    Robust exercise detection: any non-detail line that is short, numbered,
    carries an emoji, or matches a broad exercise keyword starts a NEW exercise.
-   This guarantees every exercise (and its per-set weights) is kept — even for
-   names not in the keyword list (דו-ראשי, תלת-ראשי, כתפיים, רגליים, ...). */
+   This guarantees every exercise (and its per-set weights and technique cues) is kept. */
 function parseExercisesFromContent(rawContent) {
   if (!rawContent) return [];
 
@@ -151,7 +303,11 @@ function parseExercisesFromContent(rawContent) {
     line.includes('ביצוע') ||
     line.includes('דגשים') ||
     line.includes('הנחיות') ||
-    line.includes('מנח');
+    line.includes('הוראות') ||
+    line.includes('טיפ') ||
+    line.includes('מנח') ||
+    line.includes('עמידה') ||
+    line.includes('אחיזה');
 
   const isProgLine = (line) => line.includes('התקדמות') || line.includes('עומס') || line.includes('הסבר');
 
@@ -292,7 +448,7 @@ function parseExercisesFromContent(rawContent) {
     }
 
     if (isTechLine(line)) {
-      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש|הנחיות|מנח)\s*[:\-–—]?\s*/i, '').trim();
+      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש|הנחיות|הוראות(?:\s*ביצוע)?|מנח|טיפ(?:\s*טכני)?)\s*[:\-–—]?\s*/i, '').trim();
       return;
     }
 
@@ -332,10 +488,14 @@ function parseExercisesFromContent(rawContent) {
       ex.setWeights.push(Math.max(1, Math.round(w2 * 0.85 * 10) / 10));
     }
 
+    // ALWAYS ensure technique focus is 100% filled
     if (!ex.technique || ex.technique.trim().length === 0) {
       if (ex.extraDetails && ex.extraDetails.length > 0) {
         ex.technique = ex.extraDetails.shift();
       }
+    }
+    if (!ex.technique || ex.technique.trim().length === 0) {
+      ex.technique = getExerciseTechniqueCue(ex.title);
     }
   });
 
@@ -348,6 +508,7 @@ function PlanExerciseItem({ ex }) {
   // Display ONLY what the AI API returned — no system-side computation
   const setWeights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
   const hasWeightText = ex.weightText && ex.weightText.length > 0;
+  const techniqueText = ex.technique || getExerciseTechniqueCue(ex.title);
 
   return (
     <div className="plan-exercise-card" data-open={isOpen}>
@@ -401,16 +562,14 @@ function PlanExerciseItem({ ex }) {
             </div>
           )}
 
-          {/* Technique Focus Box */}
-          {ex.technique && (
-            <div className="plan-ex-box plan-ex-box--tech">
-              <div className="plan-ex-box-title">
-                <span className="box-icon">🎯</span>
-                <span>דגש טכניקה:</span>
-              </div>
-              <p className="plan-ex-box-text">{ex.technique}</p>
+          {/* Technique Focus Box - Always 100% Guaranteed to render */}
+          <div className="plan-ex-box plan-ex-box--tech">
+            <div className="plan-ex-box-title">
+              <span className="box-icon">🎯</span>
+              <span>דגש טכניקה:</span>
             </div>
-          )}
+            <p className="plan-ex-box-text">{techniqueText}</p>
+          </div>
 
           {/* Progressive Overload Box */}
           {ex.progression && (
@@ -568,7 +727,7 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
                             <td className="pp-col-num">{j + 1}</td>
                             <td className="pp-col-ex">
                               <div className="pp-ex-name">{ex.title}</div>
-                              {ex.technique && <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique}</div>}
+                              <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique || getExerciseTechniqueCue(ex.title)}</div>
                               {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">התקדמות עומס</span>{ex.progression}</div>}
                               {ex.extraDetails.map((det, k) => (
                                 <div className="pp-ex-detail" key={k}>{det}</div>
@@ -1576,7 +1735,7 @@ export function DashboardPage({ user }) {
           restVal: mBadge ? mBadge.val : '60 שניות',
           setWeights: Array.isArray(ex.setWeights) && ex.setWeights.length > 0 ? [...ex.setWeights] : [20, 17.5, 15],
           weightText: ex.weightText || '',
-          technique: ex.technique || '',
+          technique: ex.technique || getExerciseTechniqueCue(ex.title),
           progression: ex.progression || '',
           extraDetails: Array.isArray(ex.extraDetails) ? [...ex.extraDetails] : []
         };
