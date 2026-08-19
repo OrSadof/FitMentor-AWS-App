@@ -1,14 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
+import { fitmentorApi } from './api/fitmentorApi'
 import { DashboardPage } from './pages/DashboardPage'
 import { TrainingLogPage } from './pages/TrainingLogPage'
 import { ProgressPage } from './pages/ProgressPage'
 import { AdminDashboardPage } from './pages/AdminDashboardPage'
-
-/* ─── API Configuration ─── */
-const API_BASE_URL = "https://8wc1g61715.execute-api.il-central-1.amazonaws.com/prod";
-const AUTH_URL = `${API_BASE_URL}/API`;
-const DASHBOARD_URL = `${API_BASE_URL}/Dashboard`;
 
 /* ─── Helpers ─── */
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -73,48 +69,6 @@ function extractDisplayNameFromIdToken(idToken) {
   if (!payload || typeof payload !== "object") return "";
   const name = payload.name || payload.given_name || payload["cognito:username"] || "";
   return typeof name === "string" ? name.trim() : "";
-}
-
-async function apiRequest(action, userId, payload = {}) {
-  let targetUrl = DASHBOARD_URL;
-
-  if (["login", "register", "confirmRegister", "resendCode", "forgotPassword", "confirmForgotPassword"].includes(action)) {
-    targetUrl = AUTH_URL;
-  }
-
-  const effectiveUserId = userId || payload?.email || "";
-
-  if (action !== "forgotPassword") {
-    console.log(`Sending ${action} request for ${effectiveUserId} to: ${targetUrl}`);
-  }
-
-  const response = await fetch(targetUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, userId: effectiveUserId, payload }),
-  });
-
-  const rawText = await response.text().catch(() => "");
-  const data = (() => {
-    if (!rawText) return {};
-    try {
-      return JSON.parse(rawText);
-    } catch {
-      return { rawText };
-    }
-  })();
-
-  if (action !== "forgotPassword") {
-    console.log(`Response ${action}:`, response.status, data);
-  }
-  if (!response.ok) {
-    const message = data.message || data.error || data.rawText || `Request failed: ${response.status}`;
-    const err = new Error(message);
-    err.status = response.status;
-    err.data = data;
-    throw err;
-  }
-  return data;
 }
 
 /* ─── Toast Component ─── */
@@ -221,7 +175,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     setLoginStatusClass('is-loading');
 
     try {
-      const res = await apiRequest("login", email, { password: loginPassword });
+      const res = await fitmentorApi.login(email, loginPassword);
       const isUserBlocked = localStorage.getItem(`fitmentor_blocked_${email.toLowerCase().trim()}`) === 'true';
       if (isUserBlocked || res.status === 'blocked' || res.isBlocked) {
         setLoginStatusClass('is-error');
@@ -304,7 +258,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     setStatusClass('is-loading');
 
     try {
-      await apiRequest("register", email, { password: regPassword, name: regName.trim() });
+      await fitmentorApi.register(email, regPassword, regName.trim());
       setStatusClass('is-success');
       setRegisteringTitle('נרשמת בהצלחה! 🎉');
       setRegisteringSubtitle('נשלח אליך מייל מעוצב עם קישור לאימות החשבון 📧');
@@ -349,7 +303,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
 
     setForgotSubmitting(true);
     try {
-      await apiRequest("forgotPassword", email);
+      await fitmentorApi.forgotPassword(email);
       resetUsernameRef.current = email;
     } catch (err) {
       // Suppress error for security against user enumeration
@@ -386,10 +340,11 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     if (hasError) return;
 
     try {
-      await apiRequest("confirmForgotPassword", resetUsernameRef.current, {
-        code: resetCodeRef.current,
-        newPassword: resetNewPassword
-      });
+      await fitmentorApi.confirmForgotPassword(
+        resetUsernameRef.current,
+        resetCodeRef.current,
+        resetNewPassword
+      );
       showToast('הסיסמה עודכנה בהצלחה! ✅');
       switchView('login');
     } catch (err) {
