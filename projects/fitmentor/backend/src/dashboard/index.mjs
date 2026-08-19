@@ -228,65 +228,6 @@ async function handleGetTrainingLogs(userId) {
   return { logs, error: null };
 }
 
-function getExerciseTechniqueCue(title) {
-  const t = String(title || '').toLowerCase().trim();
-  if (!t) return 'שמור על גב ישר, ליבה אסופה וטווח תנועה מלא ומבוקר לאורך כל התרגיל.';
-
-  if (t.includes('דמבל') || t.includes('משקולות יד') || t.includes('dumbbell bench')) {
-    if (t.includes('שיפוע חיובי') || t.includes('incline')) {
-      return 'כוון את הספסל לזווית של 30-45 מעלות, הצמד שכמות ודחוף את המשקולות מעל החזה העליון תוך הורדה מבוקרת.';
-    }
-    return 'שכב על ספסל שטוח, החזק משקולת בכל יד בגובה החזה. דחוף את המשקולות כלפי מעלה עד שהזרועות כמעט ישרות, והורד בחזרה באיטיות תוך מתיחת החזה.';
-  }
-  if (t.includes('לחיצת חזה') || t.includes('bench press') || t.includes('בנץ')) {
-    return 'הצמד שכמות לספסל, הורד את המוט בצורה מבוקרת לקו הפטמות/מרכז החזה, ודחוף בעוצמה תוך שמירה על עמוד שדרה יציב.';
-  }
-  if (t.includes('פרפר') || t.includes('fly')) {
-    return 'שמור על כיפוף קל וקבוע במרפקים, פתח את הידיים למתיחה מרבית של סיבי החזה, וכווץ במרכז התנועה לשנייה.';
-  }
-  if (t.includes('פולי עליון') || t.includes('lat pull') || t.includes('lat pulldown') || t.includes('חתירה עליונה')) {
-    return 'שב זקוף עם חזה מורם וגב מעט נטוי לאחור. אחוז ברוחב מעט רחב מכתפיים ומשוך את המוט/ידית לחזה העליון תוך כיווץ שכמות מקסימלי.';
-  }
-  if (t.includes('מתח') || t.includes('pull up') || t.includes('chin up')) {
-    return 'התחל מתלייה מלאה, משוך מתוך שרירי הגב והורד שכמות מטה עד שהסנטר עובר את המוט, ורד בשליטה מלאה.';
-  }
-  if (t.includes('חתירה') || t.includes('row')) {
-    return 'הטה את הגב לפנים ב-45 מעלות עם ברכיים כפופות קלות וגב ניטרלי. משוך את המשקל לכיוון הטבור תוך הצמדת מרפקים לגוף.';
-  }
-  if (t.includes('דדליפט') || t.includes('deadlift')) {
-    return 'עמוד כשהמוט צמוד לשוקיים, אחוז ברוחב כתפיים, הרם את החזה ודחוף את הרצפה תוך נעילת גב ישר ורציף לאורך כל התנועה.';
-  }
-  if (t.includes('סקוואט') || t.includes('squat')) {
-    return 'עמוד בפיסוק ברוחב כתפיים, שלח את הישבן לאחור ורד לעומק מקביל לרצפה תוך שמירה על ברכיים בקו אצבעות הרגליים ועקב מוצמד.';
-  }
-  if (t.includes('לחיצת רגליים') || t.includes('leg press')) {
-    return 'הנח את כפות הרגליים במרכז המשטח, הורד את המשקל עד לזווית של 90 מעלות בברכיים מבלי לנתק את הגב התחתון מהמשענת.';
-  }
-  if (t.includes('מכרעים') || t.includes('לאנג') || t.includes('lunge')) {
-    return 'בצע צעד מבוקר קדימה או אחורה, רד עד ששתי הברכיים ב-90 מעלות תוך שמירה על גו זקוף ושיווי משקל יציב.';
-  }
-  if (t.includes('לחיצת כתפיים') || t.includes('shoulder press') || t.includes('overhead press')) {
-    return 'שב או עמוד בגו זקוף, החזק את המשקולות בגובה האוזניים ולחץ ישירות מעל הראש עד יישור כמעט מלא ללא הקשתת הגב התחתון.';
-  }
-  if (t.includes('הרחקה לצדדים') || t.includes('lateral raise')) {
-    return 'הרם את המשקולות לצדדים בגובה הכתפיים עם כיפוף קל וקבוע במרפקים, והורד באיטיות ללא תנופת גוף.';
-  }
-  if (t.includes('יד קדמית') || t.includes('כפיפת מרפקים') || t.includes('bicep') || t.includes('hammer')) {
-    return 'הצמד את המרפקים לצידי המותניים, הרם את המשקל מתוך שריר הזרוע בלבד תוך כיווץ שיא, והורד באיטיות ללא נדנוד הגוף.';
-  }
-  if (t.includes('יד אחורית') || t.includes('פשיטת מרפקים') || t.includes('tricep') || t.includes('pushdown')) {
-    return 'נעל את המרפקים צמודים לגוף, ישר את הידיים מטה עד נעילה מלאה ומבוקרת של שריר היד האחורית, וחזור באיטיות לקו החזה.';
-  }
-  if (t.includes('פלאנק') || t.includes('plank')) {
-    return 'הישען על האמות וכריות כפות הרגליים, שמור על קו ישר מקודקוד ועד עקבים, כווץ בטן וישבן והימנע משקיעת האגן מטה.';
-  }
-  if (t.includes('בטן') || t.includes('crunch')) {
-    return 'התמקד בקירוב הצלעות אל האגן תוך כיווץ יזום של שרירי הבטן, ונשוף את האוויר במלואו בשיא התנועה.';
-  }
-
-  return 'בצע את התנועה בטווח תנועה מלא ומבוקר, שמור על גב ישר וליבה אסופה, והקפד על נשימה סדירה לאורך כל הסט.';
-}
-
 function sanitizeAndRepairPlan(rawHtml, reqDays) {
   let html = String(rawHtml || '').trim();
 
@@ -306,27 +247,32 @@ async function handleGeneratePlan(userId, payload) {
   const fitnessDesc = { 'beginner': 'מתחיל (0-6 חודשים)', 'intermediate': 'בינוני (6-24 חודשים)', 'advanced': 'מתקדם (2+ שנים)' }[fitnessLevel] || fitnessLevel;
   const equipmentDesc = { 'gym': 'חדר כושר מלא', 'dumbbells': 'משקולות בלבד', 'bodyweight': 'משקל גוף בלבד', 'minimal': 'ציוד ביתי מינימלי' }[equipment] || equipment;
 
-  const prompt = `בנה תוכנית אימונים מקצועית של בדיוק ${reqDays} ימים נפרדים לחדר כושר.
-מתאמן: גיל ${age}, משקל ${weight} ק"ג, גובה ${height} ס"מ, רמת כושר ${fitnessDesc}, ציוד ${equipmentDesc}, מטרה ${goal}.
+  const prompt = `אתה מודל ה-AI של DeepSeek ומומחה עולמי למדעי הספורט ואימון כושר אישי.
+עליך לבנות תוכנית אימונים מקצועית ומלאה של בדיוק ${reqDays} ימים נפרדים לחדר כושר עבור המתאמן:
+• גיל: ${age}
+• משקל: ${weight} ק"ג
+• גובה: ${height} ס"מ
+• רמת כושר: ${fitnessDesc}
+• ציוד: ${equipmentDesc}
+• מטרה: ${goal}
 
-⚠️ כללים מחייבים (100% חובה לעמוד בכולם!):
-1. בדיוק ${reqDays} ימי אימון נפרדים! לכל יום כותרת <h3> בפורמט:
-${Array.from({ length: reqDays }, (_, i) => `<h3>יום ${i + 1}: [שם האימון]</h3>`).join('\n')}
+⚠️ כללי מבנה HTML קריטיים ומחייבים (100% מהנתונים חובה לייצר ללא יוצא מן הכלל!):
+עבור כל אחד מ-${reqDays} הימים:
+<h3>יום X: [שם יום האימון וקבוצות שריר]</h3>
 
-2. לכל יום אימון צור בדיוק 3 תרגילים בולטים. לכל תרגיל בדיוק 5 פסקאות <p> עוקבות:
-<p>🏋️ <strong>[שם התרגיל בעברית] (English Name)</strong></p>
-<p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
-<p><strong>משקל מומלץ:</strong> סט 1: A ק"ג | סט 2: B ק"ג | סט 3: C ק"ג</p>
-<p><strong>דגשי טכניקה:</strong> [הנחיה טכנית מפורטת ממוקדת בת 1-2 משפטים על מנח גוף, גב ישר וטווח תנועה]</p>
-<p><strong>התקדמות עומס והסבר:</strong> [משפט 1 מפורט על ההיגיון בבחירת המשקלים ואיך להעלות עומס]</p>
+עבור כל אחד מ-3 התרגילים בכל יום, חובה לייצר בדיוק 5 פסקאות <p> עוקבות ומלאות:
+1. <p>🏋️ <strong>[שם התרגיל בעברית] ([English Exercise Name])</strong></p>
+2. <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות מנוחה</p>
+3. <p><strong>משקל מומלץ:</strong> סט 1: X ק"ג | סט 2: Y ק"ג | סט 3: Z ק"ג</p>
+4. <p><strong>דגש טכניקה:</strong> [הנחיה ביומכנית מלאה ומפורטת בת 1-2 משפטים על מנח גוף, גב ישר, נשימה וטווח תנועה]</p>
+5. <p><strong>התקדמות עומס:</strong> [משפט מפורט על עומס פרוגרסיבי ואיך להעלות משקל/חזרות]</p>
 
-3. כללי משקלים וטכניקה מחייבים:
-• משקלים מספריים בלבד בק"ג לכל סט (לדוגמה: סט 1: 20 ק"ג | סט 2: 17.5 ק"ג | סט 3: 15 ק"ג).
-• חוק הדעיכה (Set 1 >= Set 2 >= Set 3): המשקל בסט 1 חייב להיות הגבוה ביותר.
-• חובה לכלול דגש טכניקה מפורט ומקצועי לכל תרגיל ותרגיל! חל איסור מוחלט להשמיט דגש טכניקה!
-• חל איסור מוחלט לרשום "משקל גוף", וחל איסור מוחלט לרשום מילים סתמיות כמו "טובה" בדגשי הטכניקה!
-
-4. בסוף <div class="plan-tips"> עם 3 טיפי תזונה והתאוששות. עטוף ב-<div class="ai-plan-result">.`;
+⚠️ כללי ברזל:
+• חובה לכלול בכל תרגיל את פסקה 4 "דגש טכניקה:" - חל איסור מוחלט להשמיט דגש טכניקה מאף תרגיל!
+• משקלים מספריים ריאליסטיים בלבד בק"ג לכל סט (סט 1 >= סט 2 >= סט 3 עקב ניהול עייפות).
+• בסיום כל התוכנית: <div class="plan-tips"><p>טיפ תזונה...</p><p>טיפ התאוששות...</p><p>טיפ שינה...</p></div>
+• עטוף הכל ב-<div class="ai-plan-result">...</div>
+• החזר קוד HTML נקי בלבד ללא שום טקסט מיותר מסביב.`;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
   const MAX_ATTEMPTS = 2;
@@ -699,7 +645,8 @@ function extractChatReply(raw) {
 }
 
 const FAST_AI_MODELS = [
-  "deepseek/deepseek-v4-flash-0731"
+  "deepseek/deepseek-chat",
+  "deepseek/deepseek-r1"
 ];
 const API_TIMEOUT_MS = 25000;
 const MAX_OUTPUT_TOKENS = 4500;
@@ -730,44 +677,50 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
 }
 
 async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null, maxTokensOverride = null) {
+  const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
   const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
+  const apiKey = deepseekKey || openRouterKey;
 
-  if (!openRouterKey) {
-    console.error("Missing OPENROUTER_API_KEY for AI execution.");
+  if (!apiKey) {
+    console.error("Missing DEEPSEEK_API_KEY / OPENROUTER_API_KEY for AI execution.");
     if (isChatCall) {
       return JSON.stringify({
-        reply: "מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
+        reply: "מפתח ה-API של DeepSeek חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
         updatedPlanHtml: null,
         uiAction: null,
       });
     }
     return `
 <div class="ai-plan-result">
-  <h3>שגיאה בתקשורת עם ה-AI</h3>
-  <p>מפתח OPENROUTER_API_KEY חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.</p>
+  <h3>שגיאה בתקשורת עם DeepSeek AI</h3>
+  <p>מפתח ה-API של DeepSeek חסר במערכת. אנא הגדר אותו ב-AWS Lambda.</p>
 </div>
 `.trim();
   }
 
-  const timeoutMs = isChatCall ? 15000 : (systemPromptOverride ? 10000 : 25000);
+  const timeoutMs = isChatCall ? 18000 : (systemPromptOverride ? 12000 : 30000);
   const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 2500 : MAX_OUTPUT_TOKENS);
   const modelsToTry = FAST_AI_MODELS;
   let lastErr = null;
 
-  let systemPrompt = "You are an elite master strength and conditioning sports scientist. Your exercise selections and recommended per-set weights must be 100% logically consistent, descending or equal across sets (Set 1 >= Set 2 >= Set 3) due to fatigue management (Set 1 is performed fresh with highest weight). Never output illogical weights like 0kg, 0.5kg, 1kg or 0,0,1 sequences for loaded exercises. Always provide realistic numerical kg values for every set of every loaded exercise. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגשי טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, rich HTML for the workout plan.";
+  let systemPrompt = "You are DeepSeek, an elite master strength and conditioning sports scientist. Your exercise selections, per-set descending weights, and rich biomechanical technique instructions must be 100% complete and accurate. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגש טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, clean HTML for the workout plan.";
 
   if (systemPromptOverride) {
     systemPrompt = systemPromptOverride;
   } else if (isChatCall) {
-    systemPrompt = "You are FitMentor AI, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON.";
+    systemPrompt = "You are FitMentor AI powered by DeepSeek, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON.";
   }
 
+  const isDeepSeekDirect = Boolean(deepseekKey);
+  const endpoint = isDeepSeekDirect ? "https://api.deepseek.com/chat/completions" : "https://openrouter.ai/api/v1/chat/completions";
+
   for (let idx = 0; idx < modelsToTry.length; idx++) {
-    const model = modelsToTry[idx];
+    const rawModel = modelsToTry[idx];
+    const model = isDeepSeekDirect ? "deepseek-chat" : rawModel;
     const t0 = Date.now();
 
     try {
-      console.log(`[AI_CALL_START] model=${model}, isChatCall=${isChatCall}`);
+      console.log(`[DEEPSEEK_CALL_START] endpoint=${endpoint}, model=${model}, isChatCall=${isChatCall}`);
       const requestPayload = {
         model,
         messages: [
@@ -778,11 +731,11 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
         temperature: systemPromptOverride ? 0.2 : 0.4
       };
 
-      const response = await fetchWithHardTimeout("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetchWithHardTimeout(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${openRouterKey}`,
+          "Authorization": `Bearer ${apiKey}`,
           "HTTP-Referer": "https://fitmentor.app",
           "X-Title": "FitMentor"
         },
@@ -791,8 +744,8 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
-        console.warn(`[AI_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
-        throw new Error(`AI API returned HTTP ${response.status} for ${model}`);
+        console.warn(`[DEEPSEEK_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
+        throw new Error(`DeepSeek API returned HTTP ${response.status} for ${model}`);
       }
 
       const data = await response.json();
@@ -804,24 +757,25 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
           : (typeof data.choices?.[0]?.text === "string" ? data.choices[0].text : ""));
 
       if (typeof text === "string" && text.trim().length > 0) {
-        console.log(`[AI_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
+        console.log(`[DEEPSEEK_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
         return text;
       }
 
-      throw new Error(`Empty response returned from model ${model}`);
+      throw new Error(`Empty response returned from DeepSeek model ${model}`);
     } catch (err) {
       lastErr = err;
-      console.warn(`[AI_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
+      console.warn(`[DEEPSEEK_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
+      if (isDeepSeekDirect) break;
     }
   }
 
-  // Handle final failure
+  // Handle final failure - no fallback to other AI providers!
   if (!isChatCall) {
-    throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
+    throw new Error(lastErr?.message || "ה-API של DeepSeek נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
   }
 
   return JSON.stringify({
-    reply: `שגיאה בתקשורת עם ה-AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
+    reply: `שגיאה בתקשורת עם DeepSeek AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
     updatedPlanHtml: null,
     uiAction: null
   });
