@@ -178,12 +178,12 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
       const res = await fitmentorApi.login(email, loginPassword);
       if (res.status === 'blocked' || res.isBlocked) {
         setLoginStatusClass('is-error');
-        setLoginTitle('משתמש חסום');
-        setLoginSubtitle('החשבון שלך נחסם על ידי מנהל המערכת 🚫');
+        setLoginTitle('שגיאה בהתחברות');
+        setLoginSubtitle('משהו השתבש, או שהאימייל או הסיסמה אינם נכונים.');
 
         setTimeout(() => {
           switchView('login');
-        }, 2000);
+        }, 1500);
         return;
       }
       const token = res.idToken || res.token || res.accessToken;
@@ -213,21 +213,12 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
       }
     } catch (err) {
       setLoginStatusClass('is-error');
-      const isBlocked = err?.data?.isBlocked || 
-                        err?.data?.status === 'blocked' || 
-                        (err?.message && (err.message.includes('נחסם') || err.message.toLowerCase().includes('disabled') || err.message.toLowerCase().includes('blocked')));
-
-      if (isBlocked) {
-        setLoginTitle('משתמש חסום');
-        setLoginSubtitle('החשבון שלך נחסם על ידי מנהל המערכת 🚫');
-      } else {
-        setLoginTitle('שגיאה בהתחברות');
-        setLoginSubtitle(err.message || 'אימייל או סיסמה אינם נכונים.');
-      }
+      setLoginTitle('שגיאה בהתחברות');
+      setLoginSubtitle('משהו השתבש, או שהאימייל או הסיסמה אינם נכונים.');
 
       setTimeout(() => {
         switchView('login');
-      }, 2000);
+      }, 1500);
     }
   };
 

@@ -653,14 +653,14 @@ export const handler = async (event) => {
             return {
               statusCode: 403,
               headers,
-              body: JSON.stringify({ message: "המשתמש נחסם על ידי מנהל המערכת.", isBlocked: true, status: "blocked" })
+              body: JSON.stringify({ message: "משהו השתבש, או שהאימייל או הסיסמה אינם נכונים.", isBlocked: true, status: "blocked" })
             };
           }
           if (err.name === "NotAuthorizedException") {
             return {
               statusCode: 401,
               headers,
-              body: JSON.stringify({ message: "שם משתמש או סיסמה שגויים." })
+              body: JSON.stringify({ message: "משהו השתבש, או שהאימייל או הסיסמה אינם נכונים." })
             };
           }
           if (err.name === "UserNotConfirmedException") {
