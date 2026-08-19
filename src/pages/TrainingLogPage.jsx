@@ -109,7 +109,7 @@ export function TrainingLogPage({ user, onNavigate }) {
   const [bodyWeightKg, setBodyWeightKg] = useState(75);
   const [notes, setNotes] = useState('');
   const [exercises, setExercises] = useState([
-    { name: '', sets: [{ weight: '', reps: '' }] }
+    { name: '', sets: [{ weight: '', reps: '', notes: '' }] }
   ]);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -132,15 +132,61 @@ export function TrainingLogPage({ user, onNavigate }) {
     setMsg(null);
     try {
       const res = await fitmentorApi.getWorkoutLog(effectiveEmail, selectedDate);
-      if (res?.log) {
-        if (res.log.bodyWeightKg) setBodyWeightKg(res.log.bodyWeightKg);
-        if (res.log.notes) setNotes(res.log.notes);
-        if (Array.isArray(res.log.exercises) && res.log.exercises.length > 0) {
-          setExercises(res.log.exercises);
+      let foundLog = res?.log;
+
+      if (!foundLog && effectiveEmail) {
+        try {
+          const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
+          const raw = localStorage.getItem(userLogsKey);
+          if (raw) {
+            const logsMap = JSON.parse(raw);
+            if (logsMap && logsMap[selectedDate]) {
+              foundLog = logsMap[selectedDate];
+            }
+          }
+        } catch {}
+      }
+
+      if (foundLog) {
+        if (foundLog.bodyWeightKg) setBodyWeightKg(foundLog.bodyWeightKg);
+        setNotes(foundLog.notes || '');
+        if (Array.isArray(foundLog.exercises) && foundLog.exercises.length > 0) {
+          setExercises(foundLog.exercises);
+        } else {
+          setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
         }
+      } else {
+        // Reset state for dates without existing logs
+        setNotes('');
+        setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
       }
     } catch (err) {
       console.error('Error loading workout log:', err);
+      let foundLog = null;
+      if (effectiveEmail) {
+        try {
+          const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
+          const raw = localStorage.getItem(userLogsKey);
+          if (raw) {
+            const logsMap = JSON.parse(raw);
+            if (logsMap && logsMap[selectedDate]) {
+              foundLog = logsMap[selectedDate];
+            }
+          }
+        } catch {}
+      }
+      if (foundLog) {
+        if (foundLog.bodyWeightKg) setBodyWeightKg(foundLog.bodyWeightKg);
+        setNotes(foundLog.notes || '');
+        if (Array.isArray(foundLog.exercises) && foundLog.exercises.length > 0) {
+          setExercises(foundLog.exercises);
+        } else {
+          setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
+        }
+      } else {
+        setNotes('');
+        setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
+      }
     } finally {
       setLoading(false);
     }
