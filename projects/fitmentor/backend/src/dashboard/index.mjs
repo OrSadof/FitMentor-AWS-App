@@ -2,7 +2,7 @@ import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { randomUUID } from "node:crypto";
 import sanitizeHtml from "sanitize-html";
@@ -65,6 +65,119 @@ const MAX_PLAN_HISTORY_TO_FETCH = 5;
 const CHAT_RECENT_TRAINING_LOG_LIMIT = 5;
 const CHAT_RECENT_MESSAGE_LIMIT = 6;
 const CHAT_RECENT_PLAN_HISTORY_LIMIT = 2;
+const MAX_BACKGROUND_GENERATION_RETRIES = 5;
+
+async function invokeBackgroundPlanGeneration({ requestId, userId, payload, retryRound = 0, retryReason = "" }) {
+  const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
+  await lambdaClient.send(new InvokeCommand({
+    FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
+    InvocationType: "Event",
+    Payload: Buffer.from(JSON.stringify({
+      source: "fitmentor.plan-generation",
+      action: "bgGeneratePlan",
+      requestId,
+      userId,
+      payload,
+      retryRound,
+      retryReason: String(retryReason || "").slice(0, 500),
+    })),
+  }));
+}
+
+function isConditionalWriteFailure(error) {
+  return error?.name === "ConditionalCheckFailedException"
+    || error?.name === "TransactionCanceledException";
+}
+
+async function claimGenerationRound(userId, requestId, retryRound) {
+  const claimToken = randomUUID();
+  const nowEpochMs = Date.now();
+  const roundCondition = retryRound === 0
+    ? "(retryRound = :round OR attribute_not_exists(retryRound))"
+    : "retryRound = :round";
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { UserID: userId, DataType: "PlanGeneration" },
+      UpdateExpression: "SET retryRound = if_not_exists(retryRound, :round), claimedRound = :round, claimToken = :claimToken, claimExpiresAt = :claimExpiresAt, updatedAt = :now",
+      ConditionExpression: `requestId = :requestId AND #status = :processing AND ${roundCondition} AND (attribute_not_exists(claimedRound) OR claimedRound < :round OR (claimedRound = :round AND claimExpiresAt < :nowEpochMs))`,
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":requestId": requestId,
+        ":processing": "processing",
+        ":round": retryRound,
+        ":claimToken": claimToken,
+        ":claimExpiresAt": nowEpochMs + 55_000,
+        ":nowEpochMs": nowEpochMs,
+        ":now": new Date().toISOString(),
+      },
+    }));
+    return claimToken;
+  } catch (error) {
+    if (isConditionalWriteFailure(error)) return null;
+    throw error;
+  }
+}
+
+async function advanceGenerationRound(userId, requestId, retryRound, nextRetryRound, claimToken, retryReason) {
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { UserID: userId, DataType: "PlanGeneration" },
+      UpdateExpression: "SET retryRound = :nextRound, retryReason = :retryReason, updatedAt = :now",
+      ConditionExpression: "requestId = :requestId AND #status = :processing AND retryRound = :round AND claimedRound = :round AND claimToken = :claimToken",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":requestId": requestId,
+        ":processing": "processing",
+        ":round": retryRound,
+        ":nextRound": nextRetryRound,
+        ":claimToken": claimToken,
+        ":retryReason": String(retryReason || "DeepSeek returned invalid plan data").slice(0, 500),
+        ":now": new Date().toISOString(),
+      },
+    }));
+    return true;
+  } catch (error) {
+    if (isConditionalWriteFailure(error)) return false;
+    throw error;
+  }
+}
+
+async function markGenerationErrorIfCurrent(
+  userId,
+  requestId,
+  retryRound,
+  message,
+  claimToken = null,
+  requireUnclaimed = false,
+) {
+  try {
+    const claimCondition = claimToken
+      ? " AND claimToken = :claimToken"
+      : (requireUnclaimed ? " AND attribute_not_exists(claimToken)" : "");
+    await docClient.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { UserID: userId, DataType: "PlanGeneration" },
+      UpdateExpression: "SET #status = :errorStatus, #message = :message, updatedAt = :now",
+      ConditionExpression: `requestId = :requestId AND #status = :processing AND retryRound = :round${claimCondition}`,
+      ExpressionAttributeNames: { "#status": "status", "#message": "message" },
+      ExpressionAttributeValues: {
+        ":requestId": requestId,
+        ":processing": "processing",
+        ":errorStatus": "error",
+        ":round": retryRound,
+        ":message": String(message || "DeepSeek plan generation failed").slice(0, 1000),
+        ":now": new Date().toISOString(),
+        ...(claimToken ? { ":claimToken": claimToken } : {}),
+      },
+    }));
+    return true;
+  } catch (error) {
+    if (isConditionalWriteFailure(error)) return false;
+    throw error;
+  }
+}
 
 function countDayHeadings(planHtml) {
   return (String(planHtml || "").match(/<h3[^>]*>/gi) || []).length;
@@ -167,24 +280,105 @@ export const handler = async (event) => {
 
     if (isInternalGeneration) {
       const internalUserId = String(event.userId || "").toLowerCase().trim();
-      if (!internalUserId || event.action !== "bgGeneratePlan" || !event.requestId) {
+      const retryRound = Number(event.retryRound ?? 0);
+      if (!internalUserId || event.action !== "bgGeneratePlan" || !event.requestId
+        || !Number.isInteger(retryRound) || retryRound < 0 || retryRound > MAX_BACKGROUND_GENERATION_RETRIES) {
         throw new HttpError(400, "Invalid internal generation event");
       }
+      if (retryRound > 0) {
+        const retryDelayMs = Math.min(1000 * (2 ** (retryRound - 1)), 8000);
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+      const claimToken = await claimGenerationRound(internalUserId, event.requestId, retryRound);
+      if (!claimToken) {
+        const currentGeneration = await getFromDb(internalUserId, "PlanGeneration");
+        const authoritativeRound = Number(currentGeneration?.retryRound);
+        const claimedRound = Number(currentGeneration?.claimedRound);
+        if (currentGeneration?.requestId === event.requestId
+          && currentGeneration?.status === "processing"
+          && Number.isInteger(authoritativeRound)
+          && authoritativeRound > retryRound
+          && (!Number.isInteger(claimedRound) || claimedRound < authoritativeRound)) {
+          // Repair the tiny outbox gap if a worker advanced DynamoDB but stopped
+          // before enqueueing the next event. Duplicate repairs are harmless:
+          // only one delivery can claim the authoritative round.
+          await invokeBackgroundPlanGeneration({
+            requestId: event.requestId,
+            userId: internalUserId,
+            payload: event.payload,
+            retryRound: authoritativeRound,
+            retryReason: currentGeneration.retryReason,
+          });
+          return { statusCode: 202, headers, body: JSON.stringify({ status: "processing", retryRound: authoritativeRound }) };
+        }
+        return { statusCode: 200, headers, body: JSON.stringify({ status: "superseded" }) };
+      }
       try {
-        const result = await handleGeneratePlan(internalUserId, event.payload, event.requestId);
+        const result = await handleGeneratePlan(
+          internalUserId,
+          event.payload,
+          event.requestId,
+          retryRound,
+          claimToken,
+          event.retryReason,
+        );
         return { statusCode: 200, headers, body: JSON.stringify(result) };
       } catch (generationError) {
-        await saveToDb(internalUserId, "PlanGeneration", {
-          status: "error",
-          requestId: event.requestId,
-          days: Number(event?.payload?.days),
-          message: generationError?.message || "DeepSeek plan generation failed",
-          updatedAt: new Date().toISOString(),
-        });
+        if (Number(generationError?.statusCode) === 409) {
+          return { statusCode: 200, headers, body: JSON.stringify({ status: "superseded" }) };
+        }
+        if (retryRound < MAX_BACKGROUND_GENERATION_RETRIES) {
+          const nextRetryRound = retryRound + 1;
+          const advanced = await advanceGenerationRound(
+            internalUserId,
+            event.requestId,
+            retryRound,
+            nextRetryRound,
+            claimToken,
+            generationError?.message,
+          );
+          if (!advanced) {
+            return { statusCode: 200, headers, body: JSON.stringify({ status: "superseded" }) };
+          }
+          try {
+            await invokeBackgroundPlanGeneration({
+              requestId: event.requestId,
+              userId: internalUserId,
+              payload: event.payload,
+              retryRound: nextRetryRound,
+              retryReason: generationError?.message,
+            });
+            console.warn(`[GENERATE_PLAN_RETRY_SCHEDULED] requestId=${event.requestId}, retryRound=${nextRetryRound}/${MAX_BACKGROUND_GENERATION_RETRIES}`);
+            return { statusCode: 202, headers, body: JSON.stringify({ status: "processing", retryRound: nextRetryRound }) };
+          } catch (retryInvokeError) {
+            console.error(`[GENERATE_PLAN_RETRY_FAILED] requestId=${event.requestId}:`, retryInvokeError?.message || retryInvokeError);
+            await markGenerationErrorIfCurrent(
+              internalUserId,
+              event.requestId,
+              nextRetryRound,
+              "Unable to continue DeepSeek plan generation",
+              claimToken,
+            );
+            return {
+              statusCode: 503,
+              headers,
+              body: JSON.stringify({ message: "Unable to continue DeepSeek plan generation" }),
+            };
+          }
+        }
+        const markedError = await markGenerationErrorIfCurrent(
+          internalUserId,
+          event.requestId,
+          retryRound,
+          generationError?.message || "DeepSeek plan generation failed",
+          claimToken,
+        );
         return {
-          statusCode: Number(generationError?.statusCode) || 500,
+          statusCode: markedError ? (Number(generationError?.statusCode) || 500) : 200,
           headers,
-          body: JSON.stringify({ message: "DeepSeek plan generation failed" }),
+          body: JSON.stringify(markedError
+            ? { message: "DeepSeek plan generation failed" }
+            : { status: "superseded" }),
         };
       }
     }
@@ -211,27 +405,35 @@ export const handler = async (event) => {
             status: "processing",
             requestId,
             days: Number(payload.days),
+            retryRound: 0,
             startedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           });
         try {
-          const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
-          await lambdaClient.send(new InvokeCommand({
-            FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
-            InvocationType: "Event",
-            Payload: Buffer.from(JSON.stringify({
-              source: "fitmentor.plan-generation",
-              action: "bgGeneratePlan",
-              requestId,
-              userId: normalizedUserId,
-              payload,
-            }))
-          }));
+          await invokeBackgroundPlanGeneration({
+            requestId,
+            userId: normalizedUserId,
+            payload,
+          });
           result = { status: "processing", requestId };
         } catch {
-          await saveToDb(normalizedUserId, "PlanGeneration", {
-            status: "error", requestId, message: "Unable to start DeepSeek plan generation", updatedAt: new Date().toISOString(),
-          });
+          const markedError = await markGenerationErrorIfCurrent(
+            normalizedUserId,
+            requestId,
+            0,
+            "Unable to start DeepSeek plan generation",
+            null,
+            true,
+          );
+          if (!markedError) {
+            const currentGeneration = await getFromDb(normalizedUserId, "PlanGeneration");
+            if (currentGeneration?.requestId === requestId
+              && (currentGeneration?.status === "processing" || currentGeneration?.status === "complete")) {
+              result = { status: "processing", requestId };
+              break;
+            }
+            throw new HttpError(409, "Plan generation request was superseded");
+          }
           throw new HttpError(503, "Unable to start DeepSeek plan generation");
         }
         }
@@ -239,10 +441,18 @@ export const handler = async (event) => {
       case "savePlan":
         {
         const safeParams = validatePlanRequest(payload?.params);
-        const safePlanHtml = sanitizeAndValidatePlan(payload?.planHtml, safeParams.days);
-        await saveToDb(normalizedUserId, "Plan", { planHtml: safePlanHtml, params: safeParams, updatedAt: new Date().toISOString() });
-        await appendPlanHistorySnapshot(normalizedUserId, safePlanHtml, safeParams);
-        result = { message: "Saved", plan: { planHtml: safePlanHtml, params: safeParams } };
+        const safePlanData = payload?.planData ? validatePlanData(payload.planData, safeParams) : null;
+        const safePlanHtml = safePlanData
+          ? sanitizeAndValidatePlan(renderPlanHtml(safePlanData, safeParams), safeParams.days)
+          : sanitizeAndValidatePlan(payload?.planHtml, safeParams.days);
+        await saveToDb(normalizedUserId, "Plan", {
+          planHtml: safePlanHtml,
+          ...(safePlanData ? { planData: safePlanData } : {}),
+          params: safeParams,
+          updatedAt: new Date().toISOString(),
+        });
+        await appendPlanHistorySnapshot(normalizedUserId, safePlanHtml, safeParams, safePlanData);
+        result = { message: "Saved", plan: { planHtml: safePlanHtml, planData: safePlanData, params: safeParams } };
         }
         break;
       case "deletePlan":
@@ -287,7 +497,12 @@ async function handleGetPlan(userId) {
     getFromDb(userId, "PlanGeneration"),
   ]);
   return {
-    plan: data ? { planHtml: data.planHtml, params: data.params, updatedAt: data.updatedAt || data.createdAt } : null,
+    plan: data ? {
+      planHtml: data.planHtml,
+      planData: data.planData || null,
+      params: data.params,
+      updatedAt: data.updatedAt || data.createdAt,
+    } : null,
     generation: generation ? {
       status: generation.status,
       requestId: generation.requestId,
@@ -439,17 +654,69 @@ function validatePlanRequest(payload) {
   return { age, weight, height, days, goal, gender, fitnessLevel, equipment };
 }
 
-async function handleGeneratePlan(userId, payload, requestId) {
+async function handleGeneratePlan(userId, payload, requestId, retryRound, claimToken, retryReason = "") {
   const safeParams = validatePlanRequest(payload);
-  const planHtml = await generateValidatedPlanHtml(userId, safeParams);
+  const { planHtml, planData } = await generateValidatedPlan(userId, safeParams, retryReason);
   const reqDays = safeParams.days;
+  const createdAt = new Date().toISOString();
 
-  await saveToDb(userId, "Plan", { planHtml, params: safeParams, createdAt: new Date().toISOString() });
-  await appendPlanHistorySnapshot(userId, planHtml, safeParams);
-  await saveToDb(userId, "PlanGeneration", {
-    status: "complete", requestId, days: reqDays, updatedAt: new Date().toISOString(),
-  });
-  return { plan: { planHtml, params: safeParams }, generation: { status: "complete", requestId } };
+  try {
+    await docClient.send(new TransactWriteCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: TABLE_NAME,
+            Item: {
+              UserID: userId,
+              DataType: "Plan",
+              planHtml,
+              planData,
+              params: safeParams,
+              requestId,
+              createdAt,
+            },
+          },
+        },
+        {
+          Update: {
+            TableName: TABLE_NAME,
+            Key: { UserID: userId, DataType: "PlanGeneration" },
+            UpdateExpression: "SET #status = :complete, days = :days, updatedAt = :now REMOVE claimedRound, claimToken, claimExpiresAt, retryReason, #message",
+            ConditionExpression: "requestId = :requestId AND #status = :processing AND retryRound = :round AND claimedRound = :round AND claimToken = :claimToken",
+            ExpressionAttributeNames: { "#status": "status", "#message": "message" },
+            ExpressionAttributeValues: {
+              ":requestId": requestId,
+              ":processing": "processing",
+              ":complete": "complete",
+              ":round": retryRound,
+              ":claimToken": claimToken,
+              ":days": reqDays,
+              ":now": createdAt,
+            },
+          },
+        },
+      ],
+    }));
+  } catch (transactionError) {
+    if (transactionError?.name === "TransactionCanceledException") {
+      const currentGeneration = await getFromDb(userId, "PlanGeneration");
+      if (currentGeneration?.requestId !== requestId
+        || currentGeneration?.status !== "processing"
+        || Number(currentGeneration?.retryRound) !== retryRound) {
+        throw new HttpError(409, "Plan generation request was superseded");
+      }
+    }
+    throw transactionError;
+  }
+
+  try {
+    await appendPlanHistorySnapshot(userId, planHtml, safeParams, planData);
+  } catch (historyError) {
+    // The generated plan is canonical; a secondary history snapshot must never
+    // turn a successful DeepSeek generation into a user-visible failure.
+    console.warn(`[PLAN_HISTORY_SNAPSHOT_FAILED] requestId=${requestId}:`, historyError?.message || historyError);
+  }
+  return { plan: { planHtml, planData, params: safeParams }, generation: { status: "complete", requestId } };
 }
 
 function buildPlanGenerationPrompt(safeParams) {
@@ -526,23 +793,26 @@ function buildPlanGenerationPrompt(safeParams) {
 }`;
 }
 
-async function generateValidatedPlanHtml(userId, safeParams) {
-  const prompt = buildPlanGenerationPrompt(safeParams);
+async function generateValidatedPlan(userId, safeParams, retryReason = "") {
+  const retryInstruction = String(retryReason || "").trim()
+    ? `\n\nהניסיון הקודם לא עבר אימות (${String(retryReason).slice(0, 500)}). החזר מחדש אובייקט JSON מלא שתואם לכל הדרישות.`
+    : "";
+  const prompt = `${buildPlanGenerationPrompt(safeParams)}${retryInstruction}`;
   const reqDays = safeParams.days;
 
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
-  const MAX_ATTEMPTS = 2;
+  // One bounded provider call per Lambda invocation leaves enough time for the
+  // conditional retry handoff before the 120-second function timeout.
+  const MAX_ATTEMPTS = 1;
   let planHtml = null;
+  let planData = null;
   let lastError = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const t0 = Date.now();
     try {
       console.log(`[GENERATE_PLAN_ATTEMPT] attempt=${attempt}/${MAX_ATTEMPTS}, reqDays=${reqDays}`);
-      const retryInstruction = attempt === 1 || !lastError
-        ? ""
-        : `\n\nהניסיון הקודם לא עבר אימות (${lastError.message}). החזר מחדש אובייקט JSON מלא שתואם לכל הדרישות.`;
-      const rawPlanData = await tryGenerateContent(`${prompt}${retryInstruction}`, {
+      const rawPlanData = await tryGenerateContent(prompt, {
         userId,
         maxTokensOverride: 7000,
         timeoutMsOverride: 50000,
@@ -557,6 +827,7 @@ async function generateValidatedPlanHtml(userId, safeParams) {
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, responseLength=${responseLen}, dayHeadings=${dayCount}/${reqDays}`);
 
       planHtml = sanitizeAndValidatePlan(candidateHtml, reqDays);
+      planData = validatedPlanData;
       console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}`);
       break;
     } catch (attemptErr) {
@@ -565,8 +836,12 @@ async function generateValidatedPlanHtml(userId, safeParams) {
     }
   }
 
-  if (!planHtml) throw new HttpError(502, lastError?.message || "DeepSeek did not return a complete valid workout plan");
-  return planHtml;
+  if (!planHtml || !planData) throw new HttpError(502, lastError?.message || "DeepSeek did not return a complete valid workout plan");
+  return { planHtml, planData };
+}
+
+async function generateValidatedPlanHtml(userId, safeParams) {
+  return (await generateValidatedPlan(userId, safeParams)).planHtml;
 }
 
 function validatePlanData(rawPlanData, safeParams) {
@@ -1496,11 +1771,17 @@ async function getPlanHistory(userId, limit = MAX_PLAN_HISTORY_TO_FETCH) {
   return result?.Items || [];
 }
 
-async function appendPlanHistorySnapshot(userId, planHtml, params) {
+async function appendPlanHistorySnapshot(userId, planHtml, params, planData = null) {
   const createdAt = new Date().toISOString();
   const dataType = buildPlanHistoryKey(createdAt);
   const summary = summarizePlanForPrompt(planHtml);
-  await saveToDb(userId, dataType, { planHtml, params, summary, createdAt });
+  await saveToDb(userId, dataType, {
+    planHtml,
+    ...(planData ? { planData } : {}),
+    params,
+    summary,
+    createdAt,
+  });
 }
 
 export const __testOnly = {
@@ -1520,5 +1801,6 @@ export const __testOnly = {
   buildPlanResponseFormat,
   validatePlanData,
   renderPlanHtml,
+  generateValidatedPlan,
   generateValidatedPlanHtml,
 };

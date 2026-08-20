@@ -181,6 +181,10 @@ Resources:
             TableName: !Ref FitMentorTable
         - Statement:
             - Effect: Allow
+              Action: dynamodb:TransactWriteItems
+              Resource: !GetAtt FitMentorTable.Arn
+        - Statement:
+            - Effect: Allow
               Action: lambda:InvokeFunction
               Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:FitMentorDashboard"
       Environment:

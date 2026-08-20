@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import DOMPurify from 'dompurify';
 import { fitmentorApi } from '../api/fitmentorApi';
+import { structuredPlanToDisplayDays, validateStructuredPlanForDisplay } from '../utils/planData';
 
 /* ─── Helper: clean AI-generated plan HTML ─── */
 function cleanPlanHtml(html) {
@@ -185,8 +186,10 @@ function parseExercisesFromContent(rawContent) {
   const isProgLine = (line) =>
     /^(?:התקדמות(?:\s*עומס)?|עומס\s*פרוגרסיבי|הסבר\s*התקדמות)\s*[:\-–—]/i.test(line);
 
+  const isFocusLine = (line) => /^מיקוד\s*האימון\s*[:\-–—]/i.test(line);
+
   const isDetailLine = (line) =>
-    isWeightLine(line) || isTechLine(line) || isProgLine(line) || isStatsLine(line);
+    isWeightLine(line) || isTechLine(line) || isProgLine(line) || isStatsLine(line) || isFocusLine(line);
 
   const broadExerciseKeyword =
     /(?:סקוואט|דדליפט|לחיצת|חתירה|משיכת|מתח|כפילת|פשיטת|הרמת|מכרעים|מקבילים|פרפר|היפ|תלת|דו\s*-?\s*ראשי|בייספס|טרייספס|כתפיי?ם|יד\s*(אחורית|קדמית)|רגליי?ם|שוקיי?ם|חזה|גב|זרוע|בטן|פלאנק|תרגיל|אופניים|פולי|כבלים|משקולות)/i;
@@ -446,11 +449,7 @@ function PlanExerciseItem({ ex }) {
   );
 }
 
-function RenderFormattedDayContent({ rawContent }) {
-  if (!rawContent) return null;
-
-  const exercises = parseExercisesFromContent(rawContent);
-
+function PlanExercisesList({ exercises }) {
   if (exercises.length === 0) {
     return <div className="plan-validation-error">מבנה יום האימון אינו תקין.</div>;
   }
@@ -462,6 +461,11 @@ function RenderFormattedDayContent({ rawContent }) {
       ))}
     </div>
   );
+}
+
+function RenderFormattedDayContent({ rawContent }) {
+  if (!rawContent) return null;
+  return <PlanExercisesList exercises={parseExercisesFromContent(rawContent)} />;
 }
 
 /* ─── Plan Day Accordion Card ─── */
@@ -482,7 +486,10 @@ function PlanDayCard({ day, index, isOpen, onToggle }) {
       </button>
       {isOpen && (
         <div className="plan-day-body">
-          <RenderFormattedDayContent rawContent={day.content} />
+          {day.focus && <p className="plan-day-focus"><strong>מיקוד האימון:</strong> {day.focus}</p>}
+          {Array.isArray(day.exercises)
+            ? <PlanExercisesList exercises={day.exercises} />
+            : <RenderFormattedDayContent rawContent={day.content} />}
         </div>
       )}
     </div>
@@ -540,7 +547,9 @@ function PrintablePlan({ name, intro, days }) {
       {/* Every day, fully expanded */}
       {days.length > 0 ? (
         days.map((day, idx) => {
-          const exercises = parseExercisesFromContent(day.content);
+          const exercises = Array.isArray(day.exercises)
+            ? day.exercises
+            : parseExercisesFromContent(day.content);
           return (
             <section className="pp-day" key={idx}>
               <div className="pp-day-header">
@@ -566,7 +575,7 @@ function PrintablePlan({ name, intro, days }) {
                     <tbody>
                       {exercises.map((ex, j) => {
                         const sets = findBadge(ex, 'סטים');
-                        const reps = findBadge(ex, 'חזרות');
+                        const reps = findBadge(ex, 'חזרות') || findBadge(ex, 'משך');
                         const rest = findBadge(ex, 'מנוחה');
                         const weights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
                         const weightStr = weights
@@ -1468,6 +1477,7 @@ export function DashboardPage({ user }) {
   const effectiveName = user?.name || user?.displayName || 'משתמש';
 
   const [planHtml, setPlanHtml] = useState(null);
+  const [planData, setPlanData] = useState(null);
   const [planParams, setPlanParams] = useState(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
   const [isBuildingPlan, setIsBuildingPlan] = useState(false);
@@ -1484,7 +1494,7 @@ export function DashboardPage({ user }) {
 
   const pollForGeneratedPlan = useCallback(async (requestId, expectedDays) => {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < 180000) {
+    while (Date.now() - startedAt < 900000) {
       await new Promise(resolve => setTimeout(resolve, 3000));
       const response = await fitmentorApi.getPlan(effectiveEmail);
       const generation = response?.generation;
@@ -1493,8 +1503,14 @@ export function DashboardPage({ user }) {
         throw new Error(generation.message || 'DeepSeek לא הצליח ליצור תוכנית תקינה');
       }
       if (generation.status === 'complete' && response?.plan?.planHtml) {
+        const structuredPlan = response.plan.planData
+          ? validateStructuredPlanForDisplay(response.plan.planData, expectedDays)
+          : null;
         return {
-          planHtml: validatePlanForDisplay(response.plan.planHtml, expectedDays),
+          planHtml: structuredPlan
+            ? cleanPlanHtml(response.plan.planHtml)
+            : validatePlanForDisplay(response.plan.planHtml, expectedDays),
+          planData: structuredPlan,
           params: response.plan.params,
         };
       }
@@ -1510,16 +1526,25 @@ export function DashboardPage({ user }) {
       const res = await fitmentorApi.getPlan(effectiveEmail);
       if (res?.plan?.planHtml) {
         try {
-          loadedPlanHtml = validatePlanForDisplay(res.plan.planHtml, Number(res.plan?.params?.days));
+          const structuredPlan = res.plan.planData
+            ? validateStructuredPlanForDisplay(res.plan.planData, Number(res.plan?.params?.days))
+            : null;
+          loadedPlanHtml = structuredPlan
+            ? cleanPlanHtml(res.plan.planHtml)
+            : validatePlanForDisplay(res.plan.planHtml, Number(res.plan?.params?.days));
           setPlanHtml(loadedPlanHtml);
+          setPlanData(structuredPlan);
           setPlanParams(res.plan.params);
         } catch (validationError) {
-          console.warn('Ignoring an unrenderable saved plan:', validationError);
+          console.warn('Saved plan validation failed:', validationError);
           setPlanHtml(null);
+          setPlanData(null);
           setPlanParams(null);
+          setPlanError(validationError?.message || 'תוכנית האימון השמורה אינה תקינה');
         }
       } else {
         setPlanHtml(null);
+        setPlanData(null);
         setPlanParams(null);
       }
 
@@ -1527,6 +1552,7 @@ export function DashboardPage({ user }) {
         setIsBuildingPlan(true);
         const generated = await pollForGeneratedPlan(res.generation.requestId, Number(res.generation.days));
         setPlanHtml(generated.planHtml);
+        setPlanData(generated.planData);
         setPlanParams(generated.params);
       }
     } catch (err) {
@@ -1546,6 +1572,33 @@ export function DashboardPage({ user }) {
   }, [effectiveEmail, loadPlan]);
 
   const startEditingPlan = () => {
+    if (planData) {
+      const structuredDays = structuredPlanToDisplayDays(planData).map((day) => ({
+        title: day.title,
+        exercises: day.exercises.map((exercise) => {
+          const setsBadge = exercise.statsBadges.find(badge => badge.label === 'סטים');
+          const prescriptionBadge = exercise.statsBadges.find(badge => badge.label === 'חזרות' || badge.label === 'משך');
+          const restBadge = exercise.statsBadges.find(badge => badge.label === 'מנוחה');
+          return {
+            title: exercise.title,
+            setsCount: setsBadge?.val || '',
+            repsVal: prescriptionBadge?.val || '',
+            restVal: restBadge?.val || '',
+            setWeights: [...exercise.setWeights],
+            weightText: exercise.weightText,
+            technique: exercise.technique,
+            progression: exercise.progression,
+            extraDetails: [],
+          };
+        }),
+      }));
+      setEditableDays(structuredDays);
+      setIsEditingPlan(true);
+      const allOpen = {};
+      structuredDays.forEach((_, index) => { allOpen[index] = true; });
+      setOpenDayIndices(allOpen);
+      return;
+    }
     const parsed = parsePlanIntoDays(cleanPlanHtml(planHtml));
     const daysWithStructuredExercises = (parsed.days || []).map(day => ({
       title: day.title,
@@ -1586,6 +1639,7 @@ export function DashboardPage({ user }) {
       );
       const response = await fitmentorApi.savePlan(effectiveEmail, newHtml, planParams);
       setPlanHtml(validatePlanForDisplay(response?.plan?.planHtml, Number(planParams?.days)));
+      setPlanData(null);
       setPlanError('');
       setIsEditingPlan(false);
     } catch (err) {
@@ -1620,17 +1674,20 @@ export function DashboardPage({ user }) {
 
   const handleCreatePlan = async (params) => {
     const previousPlanHtml = planHtml;
+    const previousPlanData = planData;
     const previousPlanParams = planParams;
     setGenerating(true);
     setIsBuildingPlan(true);
     setPlanError('');
     setPlanHtml(null);
+    setPlanData(null);
     const reqDays = Number(params?.days);
     try {
       const response = await fitmentorApi.generatePlan(effectiveEmail, params);
       if (response?.status !== 'processing' || !response?.requestId) throw new Error('AWS לא התחיל את יצירת התוכנית');
       const generated = await pollForGeneratedPlan(response.requestId, reqDays);
       setPlanHtml(generated.planHtml);
+      setPlanData(generated.planData);
       setPlanParams(generated.params);
       setIsBuildingPlan(false);
       setShowNewPlanModal(false);
@@ -1638,6 +1695,7 @@ export function DashboardPage({ user }) {
     } catch (err) {
       console.error('AI plan generation failed:', err);
       setPlanHtml(previousPlanHtml);
+      setPlanData(previousPlanData);
       setPlanParams(previousPlanParams);
       setPlanError(err?.message || 'DeepSeek לא הצליח ליצור תוכנית תקינה');
     } finally {
@@ -1657,10 +1715,14 @@ export function DashboardPage({ user }) {
     }, 150);
   };
 
-  // Clean and parse plan into days for accordion view
-  const cleanedPlan = cleanPlanHtml(planHtml);
-  const parsedPlan = parsePlanIntoDays(cleanedPlan);
-  const planDays = parsedPlan.days || [];
+  // New plans render from DeepSeek's validated structured response. HTML parsing
+  // remains only for plans saved before the structured contract was introduced.
+  const parsedPlan = planData
+    ? { intro: null, days: [] }
+    : parsePlanIntoDays(cleanPlanHtml(planHtml));
+  const planDays = planData
+    ? structuredPlanToDisplayDays(planData)
+    : (parsedPlan.days || []);
   const planIntro = parsedPlan.intro || null;
 
   return (
@@ -1861,7 +1923,10 @@ export function DashboardPage({ user }) {
         <AIChatPanel
           effectiveEmail={effectiveEmail}
           effectiveName={effectiveName}
-          onPlanUpdate={setPlanHtml}
+          onPlanUpdate={(updatedHtml) => {
+            setPlanHtml(updatedHtml);
+            setPlanData(null);
+          }}
           onOpenNewPlanForm={() => setShowNewPlanModal(true)}
         />
       )}
