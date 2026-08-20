@@ -26,6 +26,10 @@ const {
   buildChatTrainingWindowFacts,
   sanitizeAndValidatePlan,
   validatePlanRequest,
+  buildPlanGenerationPrompt,
+  buildPlanResponseFormat,
+  normalizeAndValidatePlanData,
+  renderPlanHtml,
 } = __testOnly;
 
 test('AI provider contract is pinned to the required DeepSeek model', () => {
@@ -94,6 +98,31 @@ function validPlan(days = 2) {
   </div>`;
 }
 
+function validStructuredPlan(days = 2) {
+  return {
+    days: Array.from({ length: days }, (_, dayIndex) => ({
+      dayNumber: dayIndex + 1,
+      title: `אימון גוף מלא ${dayIndex + 1}`,
+      focus: 'חיזוק כללי, טכניקה ושיפור הדרגתי של הכושר',
+      exercises: Array.from({ length: 3 }, (__, exerciseIndex) => ({
+        nameHe: `תרגיל ${dayIndex + 1}-${exerciseIndex + 1}`,
+        nameEn: `Exercise ${dayIndex + 1}-${exerciseIndex + 1}`,
+        repsMin: 8,
+        repsMax: 12,
+        restSeconds: 60,
+        weightsKg: [30, 27.5, 25],
+        technique: 'שמור על גב ניטרלי, נשימה מבוקרת וטווח תנועה מלא לאורך כל החזרה.',
+        progression: 'כאשר כל החזרות נקיות, העלה מעט את המשקל באימון הבא.',
+      })),
+    })),
+    tips: {
+      nutrition: 'העדף ארוחות מאוזנות עם חלבון, ירקות ושתייה מספקת לאורך היום.',
+      recovery: 'השאר זמן התאוששות מספק בין אימונים עצימים של אותה קבוצת שריר.',
+      sleep: 'שאף לשבע עד תשע שעות שינה עקביות בכל לילה כדי לתמוך בהתאוששות.',
+    },
+  };
+}
+
 test('authenticated identity comes only from API Gateway Cognito claims', () => {
   assert.throws(
     () => getAuthenticatedIdentity({ body: JSON.stringify({ userId: 'victim@example.com' }) }),
@@ -150,6 +179,46 @@ test('plan sanitizer preserves a complete plan and removes executable markup', (
   assert.match(sanitized, /class="ai-plan-result"/);
   assert.match(sanitized, /class="plan-tips"/);
   assert.doesNotMatch(sanitized, /onclick|script|bad\(\)/i);
+});
+
+test('structured DeepSeek plan data is validated and rendered with the exact submitted profile', () => {
+  const params = validatePlanRequest({
+    age: 25,
+    gender: 'male',
+    weight: 70,
+    height: 175,
+    days: 2,
+    goal: 'חיטוב וירידה במשקל',
+    fitnessLevel: 'beginner',
+    equipment: 'gym',
+  });
+  const prompt = buildPlanGenerationPrompt(params);
+  assert.match(prompt, /גיל: 25/);
+  assert.match(prompt, /משקל גוף: 70 ק״ג/);
+  assert.match(prompt, /גובה: 175 ס״מ/);
+  assert.match(prompt, /בדיוק 2 ימי אימון/);
+  assert.match(prompt, /אובייקט JSON יחיד/);
+  assert.doesNotMatch(prompt, /<h3>|<div class=/);
+  const responseFormat = buildPlanResponseFormat(2);
+  assert.equal(responseFormat.type, 'json_schema');
+  assert.equal(responseFormat.json_schema.strict, true);
+  assert.equal(responseFormat.json_schema.schema.properties.days.minItems, 2);
+  assert.equal(responseFormat.json_schema.schema.properties.days.items.properties.exercises.minItems, 3);
+
+  const normalized = normalizeAndValidatePlanData(JSON.stringify(validStructuredPlan(2)), params);
+  const html = renderPlanHtml(normalized, params);
+  const validatedHtml = sanitizeAndValidatePlan(html, 2);
+  assert.match(validatedHtml, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
+  assert.equal((validatedHtml.match(/<h3>/g) || []).length, 2);
+  assert.equal((validatedHtml.match(/🏋️/gu) || []).length, 6);
+  assert.doesNotMatch(validatedHtml, /undefined|null/);
+
+  const wrongDayCount = validStructuredPlan(2);
+  wrongDayCount.days.pop();
+  assert.throws(
+    () => normalizeAndValidatePlanData(wrongDayCount, params),
+    (error) => error.statusCode === 422,
+  );
 });
 
 test('plan validation rejects incomplete and incorrectly ordered output', () => {
