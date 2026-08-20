@@ -9,6 +9,7 @@ import {
 import { __testOnly } from '../projects/fitmentor/backend/src/dashboard/index.mjs';
 import { handler as dashboardHandler } from '../projects/fitmentor/backend/src/dashboard/index.mjs';
 import { handler as logicHandler } from '../projects/fitmentor/backend/src/logic/index.mjs';
+import { __testOnly as progressTestOnly } from '../projects/fitmentor/backend/src/progress/index.mjs';
 import { handler as progressHandler } from '../projects/fitmentor/backend/src/progress/index.mjs';
 import { handler as trainingHandler } from '../projects/fitmentor/backend/src/training/index.mjs';
 
@@ -33,6 +34,43 @@ test('AI provider contract is pinned to the required DeepSeek model', () => {
   assert.equal(getDeepSeekCallType(), 'planGeneration');
   assert.equal(getDeepSeekCallType({ isChatCall: true }), 'chat');
   assert.equal(getDeepSeekCallType({ systemPromptOverride: 'json-only' }), 'progressSummary');
+});
+
+test('progress records expose understandable structured facts from real workout sets', () => {
+  const today = new Date(2026, 7, 20);
+  const records = progressTestOnly.buildPrCards({
+    allTimeBest1rm: new Map([
+      ['bench', { value: 116.666, weight: 100, reps: 5, date: '2026-08-15' }],
+    ]),
+    allTimeBestSet: new Map([
+      ['לחיצת כתפיים כנגד מוט (Overhead Press)', { weight: 50, reps: 8, date: '2026-08-15' }],
+    ]),
+    today,
+  });
+
+  assert.deepEqual(records[0], {
+    id: 'estimated-1rm:bench',
+    recordType: 'estimated1RM',
+    title: 'לחיצת חזה כנגד מוט',
+    metricLabel: '1RM משוער',
+    metricValue: 116.7,
+    unit: 'ק״ג',
+    value: '116.7 ק״ג',
+    weightKg: 116.7,
+    sourceWeightKg: 100,
+    reps: 5,
+    date: '2026-08-15',
+    meta: '1RM משוער · 2026-08-15',
+    groupKey: 'chest',
+    groupLabel: 'חזה',
+    isNew: true,
+  });
+  assert.equal(records[1].recordType, 'bestSet');
+  assert.equal(records[1].metricLabel, 'הסט הכבד ביותר');
+  assert.equal(records[1].groupKey, 'shoulders');
+  assert.equal(records[1].value, '50 ק״ג × 8 חזרות');
+  assert.equal(progressTestOnly.mainLiftKey('Overhead Press'), null);
+  assert.equal(progressTestOnly.mainLiftKey('פרפר חזה (Chest Fly)'), null);
 });
 
 function validExercise(name, weights = [30, 27.5, 25]) {

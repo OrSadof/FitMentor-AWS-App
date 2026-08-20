@@ -30,6 +30,21 @@ const SvgTrophy = ({ size = 28, color = "#facc15" }) => (
   </svg>
 );
 
+const SvgInfo = ({ size = 20, color = "currentColor" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v5" />
+    <path d="M12 8h.01" />
+  </svg>
+);
+
+const SvgCalendar = ({ size = 18, color = "currentColor" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="5" width="18" height="16" rx="3" />
+    <path d="M16 3v4M8 3v4M3 10h18" />
+  </svg>
+);
+
 const SvgBrain = ({ size = 28, color = "#a855f7" }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
@@ -698,94 +713,54 @@ export function ProgressPage({ user }) {
   );
   const recs = aiInsights?.recommendations || aiInsights?.recs || [];
 
-  // Process and unify PR & achievement items for Hall of Fame
+  // Prefer structured PRs. `achievements` is retained only as a legacy source
+  // for older API responses, with duplicate records removed by type + exercise.
   const allPrItems = React.useMemo(() => {
     const list = [];
-    const seenTitles = new Set();
+    const seenRecords = new Set();
+    const sources = [
+      ...(Array.isArray(prs) ? prs.map(item => ({ item, source: 'pr' })) : []),
+      ...(Array.isArray(achievements) ? achievements.map(item => ({ item, source: 'achievement' })) : [])
+    ];
 
-    if (Array.isArray(achievements) && achievements.length > 0) {
-      achievements.forEach(ach => {
-        const title = String(ach?.title || '').trim();
-        const description = String(ach?.description || '').trim();
-        const category = String(ach?.category || '').trim();
-        const icon = String(ach?.icon || '').trim();
-        if (title && description && category && icon && !seenTitles.has(title)) {
-          seenTitles.add(title);
-          list.push({
-            title,
-            value: description,
-            groupLabel: category,
-            icon,
-            date: ach.date || '',
-            isNew: true,
-            weight: 0
-          });
-        }
-      });
-    }
-
-    if (Array.isArray(prs) && prs.length > 0) {
-      prs.forEach(pr => {
-        const title = String(pr?.title || '').trim();
-        const value = String(pr?.value || '').trim();
-        const groupLabel = String(pr?.groupLabel || '').trim();
-        const icon = String(pr?.icon || '').trim();
-        if (title && value && groupLabel && icon && !seenTitles.has(title)) {
-          seenTitles.add(title);
-          let w = 0;
-          if (pr.value) {
-            const m = String(pr.value).match(/(\d+(?:\.\d+)?)\s*ק"ג/);
-            if (m) w = Number(m[1] || 0);
-          }
-          list.push({
-            title,
-            value,
-            groupLabel,
-            icon,
-            date: pr.date || pr.meta || '',
-            isNew: Boolean(pr.isNew),
-            weight: w
-          });
-        }
-      });
-    }
+    sources.forEach(({ item, source }) => {
+      const normalized = normalizeHallOfFameRecord(item, source);
+      if (!normalized) return;
+      const identity = normalized.id || `${normalized.recordType}:${normalized.title.toLocaleLowerCase('he')}`;
+      if (seenRecords.has(identity)) return;
+      seenRecords.add(identity);
+      list.push(normalized);
+    });
 
     return list;
   }, [achievements, prs]);
 
-  // Select Hero PR (highest weight / strongest achievement)
+  // The featured record is the latest achievement, which is more meaningful
+  // than comparing unrelated exercises only by their kilogram value.
   const heroSpotlightPr = React.useMemo(() => {
     if (allPrItems.length === 0) return null;
-    return [...allPrItems].sort((a, b) => (b.weight || 0) - (a.weight || 0))[0];
+    return [...allPrItems].sort(compareHallOfFameRecords)[0];
   }, [allPrItems]);
 
-  // Secondary PR items (excluding hero when 'all' is active)
-  const secondaryPrItems = React.useMemo(() => {
-    if (!heroSpotlightPr) return allPrItems;
-    return allPrItems.filter(item => item !== heroSpotlightPr);
-  }, [allPrItems, heroSpotlightPr]);
-
-  // Filtered PR items according to active tab
   const filteredPrItems = React.useMemo(() => {
-    if (activePrFilter === 'all') return allPrItems;
-    return allPrItems.filter(item => {
-      const title = String(item.title).toLowerCase();
-      const group = String(item.groupLabel).toLowerCase();
-
-      if (activePrFilter === 'compound') {
-        return title.includes('לחיצת חזה') || title.includes('סקוואט') || title.includes('דדליפט') ||
-               title.includes('חתירה') || title.includes('לחיצת כתפיים') || title.includes('פולי עליון') ||
-               title.includes('מתח') || title.includes('מקבילים') || title.includes('bench') || title.includes('squat') || title.includes('deadlift');
-      }
-      if (activePrFilter === 'lower') {
-        return group.includes('רגליים') || group.includes('ליבה') || title.includes('סקוואט') || title.includes('ברכיים') || title.includes('בטן') || title.includes('מכרעים');
-      }
-      if (activePrFilter === 'upper') {
-        return group.includes('חזה') || group.includes('גב') || group.includes('כתפיים') || group.includes('ידיים') || title.includes('לחיצת') || title.includes('חתירה');
-      }
-      return true;
-    });
+    return allPrItems.filter(item => hallOfFameRecordMatchesFilter(item, activePrFilter));
   }, [allPrItems, activePrFilter]);
+
+  const visibleSecondaryPrItems = React.useMemo(() => {
+    if (activePrFilter !== 'all' || !heroSpotlightPr) return filteredPrItems;
+    return filteredPrItems.filter(item => item !== heroSpotlightPr);
+  }, [activePrFilter, filteredPrItems, heroSpotlightPr]);
+
+  const hallOfFameFilters = React.useMemo(() => [
+    { key: 'all', label: 'כל השיאים', count: allPrItems.length },
+    { key: 'estimated', label: '1RM משוער', count: allPrItems.filter(item => item.recordType === 'estimated1RM').length },
+    { key: 'sets', label: 'סטים כבדים', count: allPrItems.filter(item => item.recordType === 'bestSet').length },
+    { key: 'upper', label: 'פלג גוף עליון', count: allPrItems.filter(item => hallOfFameRecordMatchesFilter(item, 'upper')).length },
+    { key: 'lower', label: 'פלג גוף תחתון', count: allPrItems.filter(item => hallOfFameRecordMatchesFilter(item, 'lower')).length }
+  ], [allPrItems]);
+
+  const newPrCount = allPrItems.filter(item => item.isNew).length;
+  const latestPrDate = heroSpotlightPr?.date || '';
 
   return (
     <main className="hero progress-hero" style={{ paddingTop: '120px', paddingBottom: '60px', minHeight: '100vh' }}>
@@ -955,118 +930,144 @@ export function ProgressPage({ user }) {
           </div>
         </section>
 
-        {/* Section 3: Hall of Fame (היכל התהילה) - Redesigned Spotlight Showcase */}
-        <section className="section-block hof-section" aria-label="Achievements">
-          <div className="hof-header-row">
-            <div className="section-title-row" style={{ margin: 0 }}>
-              <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <SvgTrophy size={32} color="#facc15" />
-                <span>היכל התהילה</span>
-              </h2>
-              <div className="section-hint text-muted">שיאים אישיים והישגי מפתח שזוהו מהאימונים</div>
-            </div>
+        {/* Section 3: Hall of Fame */}
+        <section className="section-block hof-section" aria-labelledby="hall-of-fame-title">
+          <div className="hof-shell">
+            <header className="hof-intro">
+              <div className="hof-title-lockup">
+                <div className="hof-title-icon" aria-hidden="true">
+                  <SvgTrophy size={30} color="#facc15" />
+                </div>
+                <div>
+                  <span className="hof-eyebrow">השיאים שלך, במקום אחד</span>
+                  <h2 id="hall-of-fame-title" className="hof-title">היכל התהילה</h2>
+                  <p className="hof-subtitle">כל הנתונים כאן מחושבים ישירות מהאימונים ששמרת ביומן.</p>
+                </div>
+              </div>
 
-            {/* Quick Filter Tabs */}
-            <div className="hof-filter-tabs">
-              <button
-                type="button"
-                className={`hof-filter-btn ${activePrFilter === 'all' ? 'is-active' : ''}`}
-                onClick={() => setActivePrFilter('all')}
-              >
-                <span>🌐 כל השיאים</span>
-                <span className="hof-filter-count">{allPrItems.length}</span>
-              </button>
-              <button
-                type="button"
-                className={`hof-filter-btn ${activePrFilter === 'compound' ? 'is-active' : ''}`}
-                onClick={() => setActivePrFilter('compound')}
-              >
-                <span>🏋️ תרגילי מפתח</span>
-              </button>
-              <button
-                type="button"
-                className={`hof-filter-btn ${activePrFilter === 'upper' ? 'is-active' : ''}`}
-                onClick={() => setActivePrFilter('upper')}
-              >
-                <span>💪 פלג גוף עליון</span>
-              </button>
-              <button
-                type="button"
-                className={`hof-filter-btn ${activePrFilter === 'lower' ? 'is-active' : ''}`}
-                onClick={() => setActivePrFilter('lower')}
-              >
-                <span>🦵 פלג גוף תחתון</span>
-              </button>
-            </div>
-          </div>
-
-          {achievementsLoading ? (
-            <div className="card pr-card is-empty-pr" style={{ textAlign: 'center', padding: '40px 20px' }}>
-              <div className="pr-title">מנתח הישגים...</div>
-              <div className="pr-meta">בודק את האימונים האחרונים שלך 🔍</div>
-            </div>
-          ) : filteredPrItems.length > 0 ? (
-            <>
-              {/* Hero Spotlight Card (Featured Top PR) */}
-              {heroSpotlightPr && activePrFilter === 'all' && (
-                <div className="hof-hero-card">
-                  <div className="hof-hero-top">
-                    <div className="hof-hero-badge">
-                      <span>👑</span>
-                      <span>השיא המוביל במערכת</span>
-                    </div>
-                    <div className="hof-hero-time">{formatRelativeTimeHe(heroSpotlightPr.date || heroSpotlightPr.meta)}</div>
+              {!achievementsLoading && allPrItems.length > 0 && (
+                <div className="hof-summary-grid" aria-label="סיכום שיאים">
+                  <div className="hof-summary-item">
+                    <span className="hof-summary-value">{allPrItems.length}</span>
+                    <span className="hof-summary-label">שיאים בסך הכול</span>
                   </div>
-
-                  <div className="hof-hero-content">
-                    <div className="hof-hero-icon-box">
-                      <span>{heroSpotlightPr.icon || '🏋️‍♂️'}</span>
-                    </div>
-                    <div className="hof-hero-details">
-                      <div className="hof-hero-group">{heroSpotlightPr.groupLabel || 'תרגיל מפתח'}</div>
-                      <h3 className="hof-hero-title">{heroSpotlightPr.title}</h3>
-                      <div className="hof-hero-metrics-row">
-                        <div className="hof-hero-value-pill">
-                          <span>⚡</span>
-                          <span>{heroSpotlightPr.value}</span>
-                        </div>
-                        {heroSpotlightPr.isNew && (
-                          <span className="hof-hero-tag">✨ שיא חדש!</span>
-                        )}
-                      </div>
-                    </div>
+                  <div className="hof-summary-item">
+                    <span className="hof-summary-value hof-summary-value--accent">{newPrCount}</span>
+                    <span className="hof-summary-label">חדשים ב־14 ימים</span>
+                  </div>
+                  <div className="hof-summary-item hof-summary-item--date">
+                    <span className="hof-summary-value">{latestPrDate ? formatYmdHe(latestPrDate) : '—'}</span>
+                    <span className="hof-summary-label">העדכון האחרון</span>
                   </div>
                 </div>
               )}
+            </header>
 
-              {/* Secondary PR Grid */}
-              <div className="hof-secondary-grid">
-                {(activePrFilter === 'all' ? secondaryPrItems : filteredPrItems).map((item, idx) => (
-                  <div key={idx} className="hof-card">
-                    <div className="hof-card-header">
-                      <span className="hof-card-group-tag">
-                        <span>{item.icon || '🏋️'}</span>
-                        <span>{item.groupLabel || item.category || 'שיא'}</span>
+            <div className="hof-explainer" role="note">
+              <span className="hof-explainer-icon"><SvgInfo /></span>
+              <p><strong>מה זה 1RM משוער?</strong> הערכה של המשקל המרבי לחזרה אחת, המחושבת מהמשקל ומספר החזרות בסט שתיעדת. זהו אומדן — לא סט שביצעת בפועל.</p>
+            </div>
+
+            <div className="hof-filter-tabs" role="tablist" aria-label="סינון שיאים">
+              {hallOfFameFilters.map(filter => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={activePrFilter === filter.key}
+                  className={`hof-filter-btn ${activePrFilter === filter.key ? 'is-active' : ''}`}
+                  onClick={() => setActivePrFilter(filter.key)}
+                >
+                  <span>{filter.label}</span>
+                  <span className="hof-filter-count">{filter.count}</span>
+                </button>
+              ))}
+            </div>
+
+            {achievementsLoading ? (
+              <div className="hof-loading" aria-live="polite" aria-busy="true">
+                <div className="hof-loading-mark"><SvgTrophy size={30} color="#facc15" /></div>
+                <div>
+                  <strong>מסדר את השיאים שלך...</strong>
+                  <span>מחשב את ההישגים מהאימונים השמורים</span>
+                </div>
+              </div>
+            ) : allPrItems.length === 0 ? (
+              <div className="hof-empty-state">
+                <div className="hof-empty-icon"><SvgTrophy size={34} color="#94a3b8" /></div>
+                <h3>השיא הראשון שלך עוד מחכה</h3>
+                <p>אחרי שתשמור אימון עם משקל וחזרות, נציג כאן את הסטים החזקים וה־1RM המשוער שלך.</p>
+              </div>
+            ) : filteredPrItems.length === 0 ? (
+              <div className="hof-empty-state hof-empty-state--compact">
+                <h3>אין עדיין שיאים בקטגוריה הזאת</h3>
+                <p>אפשר לבחור קטגוריה אחרת או להמשיך לתעד אימונים.</p>
+              </div>
+            ) : (
+              <>
+                {heroSpotlightPr && activePrFilter === 'all' && (
+                  <article className={`hof-hero-card hof-group-${heroSpotlightPr.groupKey}`}>
+                    <div className="hof-hero-glow" aria-hidden="true" />
+                    <div className="hof-hero-top">
+                      <span className="hof-hero-badge">ההישג האחרון</span>
+                      <span className="hof-hero-time">
+                        <SvgCalendar />
+                        <span>{formatHebrewFullDate(heroSpotlightPr.date)}</span>
+                        <small>{formatRelativeTimeHe(heroSpotlightPr.date)}</small>
                       </span>
-                      {item.isNew && (
-                        <span className="hof-card-badge hof-card-badge--new">✨ NEW</span>
-                      )}
                     </div>
-                    <h4 className="hof-card-title">{item.title}</h4>
-                    <div className="hof-card-footer">
-                      <span className="hof-card-value">{item.value || item.description}</span>
-                      <span className="hof-card-time">{formatRelativeTimeHe(item.date || item.meta)}</span>
+
+                    <div className="hof-hero-content">
+                      <div className="hof-hero-icon-box" aria-hidden="true">
+                        <SvgTrophy size={38} color="#facc15" />
+                      </div>
+
+                      <div className="hof-hero-details">
+                        <div className="hof-record-label-row">
+                          <span className="hof-group-chip">{heroSpotlightPr.groupLabel}</span>
+                          <span className="hof-record-type">{heroSpotlightPr.metricLabel}</span>
+                          {heroSpotlightPr.isNew && <span className="hof-new-badge">חדש</span>}
+                        </div>
+                        <h3 className="hof-hero-title"><bdi>{heroSpotlightPr.title}</bdi></h3>
+                        {heroSpotlightPr.recordType === 'estimated1RM' && Number.isFinite(heroSpotlightPr.sourceWeightKg) && heroSpotlightPr.reps > 0 && (
+                          <p className="hof-hero-source">חושב מתוך סט של <strong>{formatRecordNumber(heroSpotlightPr.sourceWeightKg)} ק״ג × {heroSpotlightPr.reps} חזרות</strong></p>
+                        )}
+                      </div>
+
+                      <RecordMetric item={heroSpotlightPr} featured />
+                    </div>
+                  </article>
+                )}
+
+                {visibleSecondaryPrItems.length > 0 && (
+                  <div className="hof-records-heading">
+                    <div>
+                      <h3>{activePrFilter === 'all' ? 'כל השיאים הנוספים' : hallOfFameFilters.find(filter => filter.key === activePrFilter)?.label}</h3>
+                      <p>{visibleSecondaryPrItems.length} {visibleSecondaryPrItems.length === 1 ? 'שיא מוצג' : 'שיאים מוצגים'}</p>
                     </div>
                   </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className="card pr-card is-empty-pr" style={{ textAlign: 'center', padding: '40px 20px' }}>
-              <div className="pr-title">אין עדיין שיאים אישיים במערכת</div>
-              <div className="pr-meta">תעד אימונים ותרגילים ביומן האימונים וכאן יופיעו ההישגים שלך 🏋️</div>
-            </div>
-          )}
+                )}
+
+                <div className="hof-secondary-grid">
+                  {visibleSecondaryPrItems.map((item) => (
+                    <article key={item.id || `${item.recordType}:${item.title}`} className={`hof-card hof-group-${item.groupKey}`}>
+                      <div className="hof-card-header">
+                        <span className="hof-group-chip">{item.groupLabel}</span>
+                        {item.isNew && <span className="hof-new-badge">חדש</span>}
+                      </div>
+                      <span className="hof-card-type">{item.metricLabel}</span>
+                      <h4 className="hof-card-title"><bdi>{item.title}</bdi></h4>
+                      <RecordMetric item={item} />
+                      <div className="hof-card-footer">
+                        <span className="hof-card-date"><SvgCalendar size={16} /> {formatYmdHe(item.date)}</span>
+                        <span className="hof-card-time">{formatRelativeTimeHe(item.date)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </section>
 
         {/* Section 4: Smart Insights & Body Balance */}
@@ -1148,6 +1149,159 @@ export function ProgressPage({ user }) {
 }
 
 // Utility Functions
+function RecordMetric({ item, featured = false }) {
+  const hasMetric = Number.isFinite(item?.metricValue) && item.metricValue > 0;
+  const hasReps = item?.recordType === 'bestSet' && Number.isFinite(item?.reps) && item.reps > 0;
+
+  return (
+    <div className={`hof-metric ${featured ? 'hof-metric--featured' : ''}`} dir="ltr">
+      {hasMetric ? (
+        <>
+          <div className="hof-metric-weight">
+            <strong>{formatRecordNumber(item.metricValue)}</strong>
+            <span>{item.unit || 'ק״ג'}</span>
+          </div>
+          {hasReps && (
+            <div className="hof-metric-reps">
+              <span>×</span>
+              <strong>{item.reps}</strong>
+              <small>חזרות</small>
+            </div>
+          )}
+        </>
+      ) : (
+        <strong className="hof-metric-fallback" dir="auto">{item?.value || '—'}</strong>
+      )}
+    </div>
+  );
+}
+
+const HOF_GROUP_LABELS = Object.freeze({
+  chest: 'חזה',
+  back: 'גב',
+  legs: 'רגליים',
+  shoulders: 'כתפיים',
+  arms: 'ידיים',
+  core: 'ליבה',
+  general: 'כללי'
+});
+
+function normalizeHallOfFameRecord(raw, source = 'pr') {
+  if (!raw || typeof raw !== 'object') return null;
+  const rawTitle = String(raw.title || raw.exercise || raw.name || '').trim();
+  const rawValue = String(raw.value || raw.description || '').trim();
+  if (!rawTitle || !rawValue) return null;
+
+  const recordType = raw.recordType === 'estimated1RM' || /1\s*rm/i.test(`${rawTitle} ${raw.metricLabel || ''}`)
+    ? 'estimated1RM'
+    : 'bestSet';
+  const title = normalizeLegacyRecordTitle(rawTitle);
+  const metricValue = firstPositiveRecordNumber(
+    raw.metricValue,
+    raw.weightKg,
+    raw.weight,
+    extractWeightFromRecordValue(rawValue)
+  );
+  const reps = firstPositiveRecordNumber(raw.reps, extractRepsFromRecordValue(rawValue)) || 0;
+  const sourceWeightKg = firstPositiveRecordNumber(raw.sourceWeightKg);
+  const date = extractRecordDate(raw.date, raw.meta, rawValue);
+  const groupKey = inferHallOfFameGroupKey({ ...raw, title });
+  const explicitGroupLabel = String(raw.groupLabel || '').trim();
+
+  return {
+    id: String(raw.id || `${recordType}:${rawTitle.toLocaleLowerCase('he')}`),
+    source,
+    recordType,
+    title,
+    value: rawValue,
+    metricLabel: String(raw.metricLabel || (recordType === 'estimated1RM' ? '1RM משוער' : 'הסט הכבד ביותר')),
+    metricValue,
+    unit: String(raw.unit || 'ק״ג'),
+    weightKg: metricValue,
+    sourceWeightKg,
+    reps,
+    date,
+    groupKey,
+    groupLabel: explicitGroupLabel && explicitGroupLabel !== 'שיא אישי'
+      ? explicitGroupLabel
+      : HOF_GROUP_LABELS[groupKey],
+    isNew: raw.isNew === true
+  };
+}
+
+function normalizeLegacyRecordTitle(title) {
+  const normalized = String(title || '').trim().toLowerCase();
+  if (normalized === 'bench 1rm') return 'לחיצת חזה כנגד מוט';
+  if (normalized === 'squat 1rm') return 'סקוואט כנגד מוט';
+  if (normalized === 'deadlift 1rm') return 'דדליפט';
+  return String(title || '').trim();
+}
+
+function inferHallOfFameGroupKey(record) {
+  const explicit = String(record.groupKey || '').trim().toLowerCase();
+  if (Object.hasOwn(HOF_GROUP_LABELS, explicit)) return explicit;
+
+  const text = `${record.title || ''} ${record.groupLabel || ''} ${record.category || ''}`.toLowerCase();
+  if (/(shoulder|overhead|ohp)/.test(text) || text.includes('כתף')) return 'shoulders';
+  if (/(deadlift|squat|lunge|leg extension|leg press)/.test(text) || /(דדליפט|סקוואט|רגל|מכרע|ברכיים)/.test(text)) return 'legs';
+  if (/(lat|pulldown|pull down|row|back)/.test(text) || /(גב|חתירה|פולי עליון|משיכה)/.test(text)) return 'back';
+  if (/(bench|chest)/.test(text) || /(לחיצת חזה|חזה|בנץ)/.test(text)) return 'chest';
+  if (/(plank|core|abs)/.test(text) || /(ליבה|בטן)/.test(text)) return 'core';
+  if (/(curl|tricep|bicep|arm)/.test(text) || /(ידיים|בייספס|טרייספס)/.test(text)) return 'arms';
+  return 'general';
+}
+
+function hallOfFameRecordMatchesFilter(item, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'estimated') return item.recordType === 'estimated1RM';
+  if (filter === 'sets') return item.recordType === 'bestSet';
+  if (filter === 'upper') return ['chest', 'back', 'shoulders', 'arms'].includes(item.groupKey);
+  if (filter === 'lower') return ['legs', 'core'].includes(item.groupKey);
+  return true;
+}
+
+function compareHallOfFameRecords(a, b) {
+  const byDate = String(b.date || '').localeCompare(String(a.date || ''));
+  if (byDate !== 0) return byDate;
+  if (a.isNew !== b.isNew) return Number(b.isNew) - Number(a.isNew);
+  return Number(b.metricValue || 0) - Number(a.metricValue || 0);
+}
+
+function extractRecordDate(...values) {
+  for (const value of values) {
+    const match = String(value || '').match(/\d{4}-\d{2}-\d{2}/);
+    if (match) return match[0];
+  }
+  return '';
+}
+
+function extractWeightFromRecordValue(value) {
+  const match = String(value || '').match(/(\d+(?:\.\d+)?)\s*ק[״"]?ג/);
+  return match ? Number(match[1]) : null;
+}
+
+function extractRepsFromRecordValue(value) {
+  const text = String(value || '');
+  const multiplicationMatch = text.match(/[×x]\s*(\d+(?:\.\d+)?)/i);
+  if (multiplicationMatch) return Number(multiplicationMatch[1]);
+  const repsMatch = text.match(/(\d+(?:\.\d+)?)\s*חזר/);
+  return repsMatch ? Number(repsMatch[1]) : null;
+}
+
+function firstPositiveRecordNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return null;
+}
+
+function formatRecordNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return new Intl.NumberFormat('he-IL', { maximumFractionDigits: 1 }).format(number);
+}
+
 function normalizeProgressData(raw) {
   const overview = raw?.overview || raw?.stats || {};
   const heatmap = raw?.heatmap || raw?.heatmapYear || [];
@@ -1155,15 +1309,21 @@ function normalizeProgressData(raw) {
   let rawPrs = raw?.prs || raw?.personalRecords || raw?.summary?.allTimePRs || [];
   let prs = [];
   if (Array.isArray(rawPrs)) {
-    prs = rawPrs.map(p => ({
-      title: p.title || p.exercise || p.name || 'PR',
-      value: p.value || (p.weight ? `${p.weight} ק"ג × ${p.reps}` : ''),
-      meta: p.meta || (p.date ? `שיא אישי · ${formatHebrewFullDate(p.date)}` : 'שיא אישי'),
-      weight: Number(p.weight || 0),
-      reps: Number(p.reps || 0),
-      date: p.date || '',
-      isNew: p.isNew || false
-    }));
+    prs = rawPrs.map(p => {
+      const value = p.value || (p.weight ? `${p.weight} ק״ג × ${p.reps}` : '');
+      return {
+        ...p,
+        title: p.title || p.exercise || p.name || 'PR',
+        value,
+        meta: p.meta || (p.date ? `שיא אישי · ${formatHebrewFullDate(p.date)}` : 'שיא אישי'),
+        metricValue: firstPositiveRecordNumber(p.metricValue, p.weightKg, p.weight, extractWeightFromRecordValue(value)),
+        weightKg: firstPositiveRecordNumber(p.weightKg, p.weight, extractWeightFromRecordValue(value)),
+        sourceWeightKg: firstPositiveRecordNumber(p.sourceWeightKg),
+        reps: firstPositiveRecordNumber(p.reps, extractRepsFromRecordValue(value)) || 0,
+        date: p.date || extractRecordDate(p.meta),
+        isNew: p.isNew === true
+      };
+    });
   }
   const insights = raw?.insights || raw?.smartInsights || {};
   const achievements = Array.isArray(raw?.achievements) ? raw.achievements : [];
@@ -1259,12 +1419,11 @@ function formatRelativeTimeHe(dateStr) {
     const target = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
     const diffDays = Math.floor((now - target) / (1000 * 60 * 60 * 24));
 
-    if (diffDays <= 0) return 'היום 🔥';
-    if (diffDays === 1) return 'אתמול ⚡';
+    if (diffDays < 0) return new Intl.DateTimeFormat('he-IL', { day: 'numeric', month: 'short' }).format(target);
+    if (diffDays === 0) return 'היום';
+    if (diffDays === 1) return 'אתמול';
     if (diffDays === 2) return 'לפני יומיים';
-    if (diffDays > 2 && diffDays <= 7) return `לפני ${diffDays} ימים`;
-    if (diffDays > 7 && diffDays <= 14) return 'לפני שבוע';
-    if (diffDays > 14 && diffDays <= 30) return `לפני ${Math.floor(diffDays / 7)} שבועות`;
+    if (diffDays <= 30) return `לפני ${diffDays} ימים`;
     return new Intl.DateTimeFormat('he-IL', { day: 'numeric', month: 'short' }).format(target);
   } catch {
     return String(dateStr || 'שיא אישי');

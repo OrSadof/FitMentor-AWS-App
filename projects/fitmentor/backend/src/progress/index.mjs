@@ -152,7 +152,14 @@ function buildProgressFromTrainingLogs(logs, { maxDays = 365 } = {}) {
 					if (Number.isFinite(est)) {
 						if (oneRM[liftKey] == null || est > oneRM[liftKey]) oneRM[liftKey] = est;
 						const prev1 = allTimeBest1rm.get(liftKey);
-						if (!prev1 || est > prev1.value) allTimeBest1rm.set(liftKey, { value: est, date: log.date });
+						if (!prev1 || est > prev1.value) {
+							allTimeBest1rm.set(liftKey, {
+								value: est,
+								date: log.date,
+								weight,
+								reps,
+							});
+						}
 					}
 				}
 			}
@@ -272,12 +279,13 @@ function buildProgressFromTrainingLogs(logs, { maxDays = 365 } = {}) {
 
 	const prs = buildPrCards({ allTimeBestSet, allTimeBest1rm, today });
 	const insights = buildInsights({ dayAgg, today });
+	// Kept for clients that still read `achievements`, but preserve the same
+	// structured facts instead of flattening the value and date into one string.
 	const achievements = prs.map((pr) => ({
+		...pr,
 		icon: "🏆",
-		category: "שיא אישי",
-		title: pr.title,
-		description: `${pr.value} · ${pr.meta}`,
-		date: String(pr.meta || "").match(/\d{4}-\d{2}-\d{2}/)?.[0] || "",
+		category: pr.groupLabel,
+		description: pr.value,
 	}));
 
 	return { overview, heatmap, charts, prs, insights, achievements };
@@ -323,19 +331,32 @@ function buildExercise1rmChart({ dayAgg, recentDays, chartLabels }) {
 function buildPrCards({ allTimeBestSet, allTimeBest1rm, today }) {
 	const prs = [];
 
-	const liftLabels = {
-		bench: "Bench 1RM",
-		squat: "Squat 1RM",
-		deadlift: "Deadlift 1RM",
+	const liftDefinitions = {
+		bench: { title: "לחיצת חזה כנגד מוט", groupKey: "chest", groupLabel: "חזה" },
+		squat: { title: "סקוואט כנגד מוט", groupKey: "legs", groupLabel: "רגליים" },
+		deadlift: { title: "דדליפט", groupKey: "legs", groupLabel: "רגליים" },
 	};
 
 	for (const key of ["bench", "squat", "deadlift"]) {
 		const rec = allTimeBest1rm.get(key);
 		if (!rec || !Number.isFinite(rec.value)) continue;
+		const definition = liftDefinitions[key];
+		const metricValue = round1(rec.value);
 		prs.push({
-			title: liftLabels[key],
-			value: `${Math.round(rec.value)} ק"ג`,
-			meta: `שיא אישי · ${rec.date}`,
+			id: `estimated-1rm:${key}`,
+			recordType: "estimated1RM",
+			title: definition.title,
+			metricLabel: "1RM משוער",
+			metricValue,
+			unit: "ק״ג",
+			value: `${formatMetricNumber(metricValue)} ק״ג`,
+			weightKg: metricValue,
+			sourceWeightKg: round1(rec.weight),
+			reps: Math.round(rec.reps || 0),
+			date: rec.date,
+			meta: `1RM משוער · ${rec.date}`,
+			groupKey: definition.groupKey,
+			groupLabel: definition.groupLabel,
 			isNew: isWithinDays(rec.date, today, 14),
 		});
 	}
@@ -347,10 +368,23 @@ function buildPrCards({ allTimeBestSet, allTimeBest1rm, today }) {
 		.slice(0, 6);
 
 	for (const r of setPrs) {
+		const groupKey = muscleGroupForExercise(r.name);
+		const metricValue = round1(r.weight);
+		const reps = Math.round(r.reps);
 		prs.push({
+			id: `best-set:${r.name}`,
+			recordType: "bestSet",
 			title: r.name,
-			value: `${Math.round(r.weight)} ק"ג × ${Math.round(r.reps)}`,
-			meta: `שיא סט · ${r.date}`,
+			metricLabel: "הסט הכבד ביותר",
+			metricValue,
+			unit: "ק״ג",
+			value: `${formatMetricNumber(metricValue)} ק״ג × ${reps} חזרות`,
+			weightKg: metricValue,
+			reps,
+			date: r.date,
+			meta: `הסט הכבד ביותר · ${r.date}`,
+			groupKey,
+			groupLabel: muscleGroupLabel(groupKey),
 			isNew: isWithinDays(r.date, today, 14),
 		});
 	}
@@ -396,21 +430,38 @@ function estimateCalories({ totalSets, totalVolume, exercisesCount }) {
 
 function mainLiftKey(name) {
 	const n = normalizeName(name);
-	if (/(bench|press)/.test(n) || n.includes("לחיצת") || n.includes("בנץ") || n.includes("חזה")) return "bench";
-	if (/(squat)/.test(n) || n.includes("סקוואט") || n.includes("רגל")) return "squat";
 	if (/(deadlift)/.test(n) || n.includes("דדליפט")) return "deadlift";
+	if (/(squat)/.test(n) || n.includes("סקוואט")) return "squat";
+	if (/(bench|chest press)/.test(n) || n.includes("לחיצת חזה") || n.includes("בנץ")) return "bench";
 	return null;
 }
 
 function muscleGroupForExercise(name) {
 	const n = normalizeName(name);
+	if (/(shoulder|ohp|overhead)/.test(n) || n.includes("כתף") || n.includes("דחיקת כתפיים")) return "shoulders";
 	if (/(bench|press|chest)/.test(n) || n.includes("חזה") || n.includes("לחיצת")) return "chest";
 	if (/(row|pull|lat|back)/.test(n) || n.includes("גב") || n.includes("חתירה") || n.includes("משיכה")) return "back";
 	if (/(squat|lunge|leg|deadlift)/.test(n) || n.includes("רגל") || n.includes("סקוואט") || n.includes("דדליפט")) return "legs";
-	if (/(shoulder|ohp|overhead)/.test(n) || n.includes("כתף") || n.includes("דחיקה")) return "shoulders";
 	if (/(curl|tricep|bicep|arm)/.test(n) || n.includes("יד") || n.includes("בייס") || n.includes("טרייס")) return "arms";
 	if (/(core|abs|plank)/.test(n) || n.includes("בטן") || n.includes("ליבה")) return "core";
 	return "arms";
+}
+
+function muscleGroupLabel(groupKey) {
+	return {
+		chest: "חזה",
+		back: "גב",
+		legs: "רגליים",
+		shoulders: "כתפיים",
+		arms: "ידיים",
+		core: "ליבה",
+	}[groupKey] || "כללי";
+}
+
+function formatMetricNumber(value) {
+	const rounded = round1(value);
+	if (!Number.isFinite(rounded)) return "--";
+	return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 function estimate1rmEpley(weight, reps) {
@@ -471,3 +522,10 @@ function isWithinDays(ymd, today, days) {
 	const diffDays = diffMs / (1000 * 60 * 60 * 24);
 	return diffDays >= 0 && diffDays <= days;
 }
+
+export const __testOnly = {
+	buildProgressFromTrainingLogs,
+	buildPrCards,
+	mainLiftKey,
+	muscleGroupForExercise,
+};
