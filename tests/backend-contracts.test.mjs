@@ -214,13 +214,17 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   structuredPlan.days[0].exercises[0].repsMax = 60;
   structuredPlan.days[0].exercises[0].prescriptionUnit = 'seconds';
   structuredPlan.days[0].exercises[0].weightsKg = [0, 0, 0];
+  structuredPlan.days[0].exercises[0].technique = 'קצר';
+  structuredPlan.days[0].exercises[0].progression = 'עלה';
   structuredPlan.days[0].exercises[1].weightsKg = [30.125, 27.55, 25.005];
+  structuredPlan.tips.nutrition = 'טיפ';
   const validated = validatePlanData(JSON.stringify(structuredPlan), params);
   assert.deepEqual(validated, structuredPlan);
   const html = renderPlanHtml(validated, params);
   const validatedHtml = sanitizeAndValidatePlan(html, 2);
   assert.match(validatedHtml, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
   assert.match(validatedHtml, /<strong>משך:<\/strong> 45-60 שניות/);
+  assert.match(validatedHtml, /<strong>דגש טכניקה:<\/strong> קצר/);
   assert.match(validatedHtml, /30\.125 ק״ג \| סט 2: 27\.55 ק״ג \| סט 3: 25\.005 ק״ג/);
   assert.equal((validatedHtml.match(/<h3>/g) || []).length, 2);
   assert.equal((validatedHtml.match(/🏋️/gu) || []).length, 6);
@@ -243,17 +247,14 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   const reversedReps = validStructuredPlan(2);
   reversedReps.days[0].exercises[0].repsMin = 12;
   reversedReps.days[0].exercises[0].repsMax = 8;
-  assert.throws(
-    () => validatePlanData(reversedReps, params),
-    (error) => error.statusCode === 422,
-  );
+  const preservedReps = validatePlanData(reversedReps, params);
+  assert.equal(preservedReps.days[0].exercises[0].repsMin, 12);
+  assert.equal(preservedReps.days[0].exercises[0].repsMax, 8);
 
   const reorderedWeights = validStructuredPlan(2);
   reorderedWeights.days[0].exercises[0].weightsKg = [20, 30, 25];
-  assert.throws(
-    () => validatePlanData(reorderedWeights, params),
-    (error) => error.statusCode === 422,
-  );
+  const preservedWeights = validatePlanData(reorderedWeights, params);
+  assert.deepEqual(preservedWeights.days[0].exercises[0].weightsKg, [20, 30, 25]);
 
   const missingHebrewName = validStructuredPlan(2);
   missingHebrewName.days[0].exercises[0].nameHe = '';
@@ -263,12 +264,13 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   );
 });
 
-test('plan validation rejects incomplete and incorrectly ordered output', () => {
+test('plan validation rejects incomplete output and preserves API-authored set order', () => {
   const incomplete = validPlan(2).replace(validExercise('תרגיל 1-ג', [18, 16, 14]), '');
   assert.throws(() => sanitizeAndValidatePlan(incomplete, 2), (error) => error.statusCode === 422);
 
   const ascending = validPlan(1).replace('סט 1: 30 ק"ג | סט 2: 27.5 ק"ג | סט 3: 25 ק"ג', 'סט 1: 20 ק"ג | סט 2: 25 ק"ג | סט 3: 30 ק"ג');
-  assert.throws(() => sanitizeAndValidatePlan(ascending, 1), (error) => error.statusCode === 422);
+  const preserved = sanitizeAndValidatePlan(ascending, 1);
+  assert.match(preserved, /סט 1: 20 ק"ג \| סט 2: 25 ק"ג \| סט 3: 30 ק"ג/);
 });
 
 test('plan request contract rejects missing or out-of-range profile data', () => {

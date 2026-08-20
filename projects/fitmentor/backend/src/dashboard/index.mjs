@@ -131,7 +131,7 @@ function sanitizeAndValidatePlan(rawHtml, expectedDays) {
     if (setValues.length !== 3 || setValues.some((value) => value < 1 || value > 10)) {
       throw new HttpError(422, `DeepSeek returned invalid set counts for workout day ${index + 1}`);
     }
-    if (repValues.length !== 3 || repValues.some(([minimum, maximum]) => minimum < 1 || maximum > 180 || minimum > maximum)) {
+    if (repValues.length !== 3 || repValues.some(([minimum, maximum]) => minimum < 1 || maximum > 180)) {
       throw new HttpError(422, `DeepSeek returned invalid repetition ranges for workout day ${index + 1}`);
     }
     if (restValues.length !== 3 || restValues.some((value) => value < 10 || value > 600)) {
@@ -147,9 +147,6 @@ function sanitizeAndValidatePlan(rawHtml, expectedDays) {
         .map((match) => Number(match[1]));
       if (weights.length !== 3 || weights.some((weight) => !Number.isFinite(weight) || weight < 0)) {
         throw new HttpError(422, `DeepSeek returned missing or non-numeric weights for workout day ${index + 1}`);
-      }
-      if (!(weights[0] >= weights[1] && weights[1] >= weights[2])) {
-        throw new HttpError(422, `DeepSeek returned weights in the wrong order for workout day ${index + 1}`);
       }
     }
   }
@@ -593,8 +590,8 @@ function validatePlanData(rawPlanData, safeParams) {
     if (!Number.isInteger(dayNumber) || dayNumber !== dayIndex + 1) {
       throw new HttpError(422, `DeepSeek returned an invalid day number at position ${dayIndex + 1}`);
     }
-    const title = validatePlanText(rawDay.title, `workout day ${dayNumber} title`, 3, 100);
-    const focus = validatePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 8, 180);
+    const title = validatePlanText(rawDay.title, `workout day ${dayNumber} title`, 1, 1000);
+    const focus = validatePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 1, 1000);
     if (!Array.isArray(rawDay.exercises) || rawDay.exercises.length !== 3) {
       throw new HttpError(422, `DeepSeek returned ${Array.isArray(rawDay.exercises) ? rawDay.exercises.length : 0} exercises for workout day ${dayNumber}; exactly 3 are required`);
     }
@@ -604,8 +601,8 @@ function validatePlanData(rawPlanData, safeParams) {
       if (!rawExercise || typeof rawExercise !== "object" || Array.isArray(rawExercise)) {
         throw new HttpError(422, `DeepSeek returned invalid exercise data for workout day ${dayNumber}`);
       }
-      const nameHe = validatePlanText(rawExercise.nameHe, `Hebrew exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 2, 100);
-      const nameEn = validatePlanText(rawExercise.nameEn, `English exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 2, 100);
+      const nameHe = validatePlanText(rawExercise.nameHe, `Hebrew exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 1, 500);
+      const nameEn = validatePlanText(rawExercise.nameEn, `English exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 1, 500);
       const exerciseIdentity = `${nameHe}|${nameEn}`.toLowerCase();
       if (exerciseNames.has(exerciseIdentity)) {
         throw new HttpError(422, `DeepSeek duplicated an exercise on workout day ${dayNumber}`);
@@ -616,7 +613,7 @@ function validatePlanData(rawPlanData, safeParams) {
       const repsMax = rawExercise.repsMax;
       const prescriptionUnit = rawExercise.prescriptionUnit;
       const restSeconds = rawExercise.restSeconds;
-      if (![repsMin, repsMax].every((value) => Number.isInteger(value) && value >= 1 && value <= 180) || repsMin > repsMax) {
+      if (![repsMin, repsMax].every((value) => Number.isInteger(value) && value >= 1 && value <= 180)) {
         console.warn(`[PLAN_REP_VALIDATION_FAILED] exercise=${nameEn}, rawReps=${JSON.stringify([rawExercise.repsMin, rawExercise.repsMax])}`);
         throw new HttpError(422, `DeepSeek returned an invalid repetition range for ${nameHe}`);
       }
@@ -634,12 +631,9 @@ function validatePlanData(rawPlanData, safeParams) {
         console.warn(`[PLAN_WEIGHT_VALIDATION_FAILED] exercise=${nameEn}, rawWeights=${JSON.stringify(rawExercise.weightsKg)}`);
         throw new HttpError(422, `DeepSeek returned invalid weights for ${nameHe}`);
       }
-      if (!(weightsKg[0] >= weightsKg[1] && weightsKg[1] >= weightsKg[2])) {
-        throw new HttpError(422, `DeepSeek returned weights in the wrong order for ${nameHe}`);
-      }
 
-      const technique = validatePlanText(rawExercise.technique, `technique instructions for ${nameHe}`, 35, 500);
-      const progression = validatePlanText(rawExercise.progression, `progression instructions for ${nameHe}`, 25, 400);
+      const technique = validatePlanText(rawExercise.technique, `technique instructions for ${nameHe}`, 1, 4000);
+      const progression = validatePlanText(rawExercise.progression, `progression instructions for ${nameHe}`, 1, 4000);
       assertExerciseMatchesEquipment({ nameHe, nameEn }, safeParams.equipment);
       return { nameHe, nameEn, repsMin, repsMax, prescriptionUnit, restSeconds, weightsKg, technique, progression };
     });
@@ -652,9 +646,9 @@ function validatePlanData(rawPlanData, safeParams) {
     throw new HttpError(422, "DeepSeek omitted the required plan tips");
   }
   const tips = {
-    nutrition: validatePlanText(rawTips.nutrition, "nutrition tip", 20, 400),
-    recovery: validatePlanText(rawTips.recovery, "recovery tip", 20, 400),
-    sleep: validatePlanText(rawTips.sleep, "sleep tip", 20, 400),
+    nutrition: validatePlanText(rawTips.nutrition, "nutrition tip", 1, 4000),
+    recovery: validatePlanText(rawTips.recovery, "recovery tip", 1, 4000),
+    sleep: validatePlanText(rawTips.sleep, "sleep tip", 1, 4000),
   };
   return { days, tips };
 }
@@ -1123,8 +1117,8 @@ function buildPlanResponseFormat(dayCount) {
               required: ["dayNumber", "title", "focus", "exercises"],
               properties: {
                 dayNumber: { type: "integer", minimum: 1, maximum: dayCount },
-                title: { type: "string", minLength: 3, maxLength: 100 },
-                focus: { type: "string", minLength: 8, maxLength: 180 },
+                title: { type: "string", minLength: 1, maxLength: 1000 },
+                focus: { type: "string", minLength: 1, maxLength: 1000 },
                 exercises: {
                   type: "array",
                   minItems: 3,
@@ -1134,8 +1128,8 @@ function buildPlanResponseFormat(dayCount) {
                     additionalProperties: false,
                     required: ["nameHe", "nameEn", "repsMin", "repsMax", "prescriptionUnit", "restSeconds", "weightsKg", "technique", "progression"],
                     properties: {
-                      nameHe: { type: "string", minLength: 2, maxLength: 100 },
-                      nameEn: { type: "string", minLength: 2, maxLength: 100 },
+                      nameHe: { type: "string", minLength: 1, maxLength: 500 },
+                      nameEn: { type: "string", minLength: 1, maxLength: 500 },
                       repsMin: { type: "integer", minimum: 1, maximum: 180 },
                       repsMax: { type: "integer", minimum: 1, maximum: 180 },
                       prescriptionUnit: { type: "string", enum: ["repetitions", "seconds"] },
@@ -1146,8 +1140,8 @@ function buildPlanResponseFormat(dayCount) {
                         maxItems: 3,
                         items: { type: "number", minimum: 0, maximum: 400 },
                       },
-                      technique: { type: "string", minLength: 35, maxLength: 500 },
-                      progression: { type: "string", minLength: 25, maxLength: 400 },
+                      technique: { type: "string", minLength: 1, maxLength: 4000 },
+                      progression: { type: "string", minLength: 1, maxLength: 4000 },
                     },
                   },
                 },
@@ -1159,9 +1153,9 @@ function buildPlanResponseFormat(dayCount) {
             additionalProperties: false,
             required: ["nutrition", "recovery", "sleep"],
             properties: {
-              nutrition: { type: "string", minLength: 20, maxLength: 400 },
-              recovery: { type: "string", minLength: 20, maxLength: 400 },
-              sleep: { type: "string", minLength: 20, maxLength: 400 },
+              nutrition: { type: "string", minLength: 1, maxLength: 4000 },
+              recovery: { type: "string", minLength: 1, maxLength: 4000 },
+              sleep: { type: "string", minLength: 1, maxLength: 4000 },
             },
           },
         },
