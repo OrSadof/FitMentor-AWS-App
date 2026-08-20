@@ -579,6 +579,30 @@ function buildChatTrainingContext(logs) {
   }).join("\n\n");
 }
 
+function buildChatTrainingWindowFacts(logs) {
+  const orderedLogs = (Array.isArray(logs) ? logs : [])
+    .slice(0, CHAT_RECENT_TRAINING_LOG_LIMIT)
+    .sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || "")));
+  if (orderedLogs.length === 0) return "מספר אימונים מדויק בחלון: 0.";
+
+  const newest = orderedLogs[0];
+  const oldest = orderedLogs[orderedLogs.length - 1];
+  const newestWeight = Number(newest?.data?.bodyWeightKg);
+  const oldestWeight = Number(oldest?.data?.bodyWeightKg);
+  const lines = [
+    `מספר אימונים מדויק בחלון: ${orderedLogs.length}.`,
+    `גבול ישן: ${normalizeChatText(oldest?.date, 20) || "לא ידוע"}.`,
+    `גבול חדש: ${normalizeChatText(newest?.date, 20) || "לא ידוע"}.`,
+  ];
+  if (Number.isFinite(oldestWeight) && Number.isFinite(newestWeight)) {
+    const difference = Number((newestWeight - oldestWeight).toFixed(2));
+    lines.push(`משקל גוף בגבול הישן: ${oldestWeight} ק״ג; בגבול החדש: ${newestWeight} ק״ג; שינוי גבול-לגבול: ${difference >= 0 ? "+" : ""}${difference} ק״ג.`);
+  } else {
+    lines.push("אין מספיק מדידות משקל גוף בשני גבולות החלון לחישוב מגמה.");
+  }
+  return lines.join(" ");
+}
+
 async function handleChat(userId, payload) {
   const message = normalizeChatText(payload?.message, 2000);
   const userName = payload?.userName;
@@ -595,6 +619,7 @@ async function handleChat(userId, payload) {
   const progress = computeProgressSignals(trainingLogs);
   const planParamsContext = buildChatProfileContext(planData?.params);
   const trainingLogsContext = buildChatTrainingContext(trainingLogs);
+  const trainingWindowFacts = buildChatTrainingWindowFacts(trainingLogs);
   const historyContext = isWorkoutSummaryRequest
     ? "לא צורף — הבקשה עוסקת בלוגי האימונים האחרונים."
     : history.length > 0
@@ -638,9 +663,14 @@ async function handleChat(userId, payload) {
 כללי איכות וכתיבה:
 - ענה ישירות לשאלה. פתח במשפט מסכם אחד, ואז הוסף רק את הפרטים שבאמת מועילים.
 - ברירת המחדל היא 2–4 פסקאות קצרות. השתמש ברשימה רק כשיש כמה פריטים מובחנים.
-- השתמש ב-**מודגש** במידה, רק לנתוני מפתח. לכל היותר 2 אימוג׳ים בתשובה רגילה.
+- השתמש ב-**מודגש** לשמות תרגילים, תאריכים, משקלים, חזרות ותוצאות שעונות ישירות על השאלה — אך אל תדגיש משפטים שלמים.
+- עטוף ב-==הדגשה מיוחדת== רק את מסקנת המפתח החשובה ביותר, ולכל היותר שתי הדגשות מיוחדות בתשובה. אל תשלב == ו-** סביב אותו טקסט.
+- כשיש אזהרה בטיחותית או הסתייגות חשובה, כתוב אותה בשורה נפרדת שמתחילה ב-> ⚠️ כדי להציג אותה כ-callout ברור.
+- בסיכום אימונים, פתח כל אימון בשורה קצרה ומודגשת בפורמט **אימון N — YYYY-MM-DD**, ולאחריה פרט את התרגילים בצורה נקייה.
+- השתמש לכל היותר ב-2 אימוג׳ים בתשובה רגילה.
 - אל תחזור על שאלת המשתמש, אל תוסיף כותרות ענק ואל תציג טבלאות.
-- בסיכום אימונים, הצג את כל האימונים שבחלון (עד 5), מהחדש לישן, עם המספרים המדויקים שנרשמו בלבד, וסיים בתובנה קצרה המבוססת על הנתונים.
+- בסיכום אימונים, הצג את כל האימונים שבחלון מהחדש לישן, עם המספרים המדויקים שנרשמו בלבד, וסיים בתובנה קצרה המבוססת על הנתונים.
+- ציין תמיד את מספר האימונים המדויק שמופיע ב"עובדות חלון מחושבות". אל תכתוב "חמישה" רק משום שהחלון יכול להכיל עד 5.
 - הצג כל סט כ-"[משקל] ק״ג × [חזרות] חזרות" כדי שלא יהיה ספק מה מייצג כל מספר.
 - כשאתה מתאר מגמה לאורך זמן, השווה אך ורק בין האימון הישן ביותר בחלון לאימון החדש ביותר וציין את שני התאריכים. אל תשווה מינימום למקסימום כאילו הם נקודות ההתחלה והסיום.
 - הערת מתאמן יכולה להצביע על קשר אפשרי בלבד; אל תציג עייפות, שינה או אוכל כסיבה מוכחת לשינוי בביצועים.
@@ -670,6 +700,9 @@ ${currentPlanContext}
 
 עד ${CHAT_RECENT_TRAINING_LOG_LIMIT} האימונים האחרונים בלבד (חדש לישן):
 ${trainingLogsContext}
+
+עובדות חלון מחושבות — אלה המקור היחיד לספירת אימונים ולמגמת משקל גבול-לגבול:
+${trainingWindowFacts}
 
 סיגנל התקדמות מחושב: ${progress.summary}
 
@@ -1192,6 +1225,7 @@ export const __testOnly = {
   normalizeRecommendations,
   buildChatProfileContext,
   buildChatTrainingContext,
+  buildChatTrainingWindowFacts,
   sanitizeAndValidatePlan,
   validatePlanRequest,
 };

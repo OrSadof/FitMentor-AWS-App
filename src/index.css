@@ -7833,6 +7833,18 @@ ul {
   font-weight: 750;
 }
 
+.chat-key-highlight {
+  display: inline;
+  padding: 1px 5px 2px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.16), rgba(16, 185, 129, 0.14));
+  color: #ccfbf1;
+  font-weight: 800;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .chat-ai-list {
   margin: 5px 0 11px;
   padding: 0 1.25rem 0 0;

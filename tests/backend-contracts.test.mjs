@@ -22,6 +22,7 @@ const {
   normalizeRecommendations,
   buildChatProfileContext,
   buildChatTrainingContext,
+  buildChatTrainingWindowFacts,
   sanitizeAndValidatePlan,
   validatePlanRequest,
 } = __testOnly;
@@ -204,4 +205,13 @@ test('chat context is intentionally bounded and excludes unrelated profile field
   assert.match(context, /תרגיל 8/);
   assert.doesNotMatch(context, /תרגיל 9/);
   assert.doesNotMatch(context, /סט 6/);
+
+  const facts = buildChatTrainingWindowFacts(logs.slice(0, 4).map((log, index) => ({
+    ...log,
+    data: { ...log.data, bodyWeightKg: [108, 103, 105, 105][index] },
+  })));
+  assert.match(facts, /מספר אימונים מדויק בחלון: 4/);
+  assert.match(facts, /גבול ישן: 2026-08-17/);
+  assert.match(facts, /גבול חדש: 2026-08-20/);
+  assert.match(facts, /שינוי גבול-לגבול: \+3 ק״ג/);
 });

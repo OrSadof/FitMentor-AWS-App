@@ -616,6 +616,7 @@ function PrintablePlan({ name, intro, days }) {
 function renderMarkdownInline(str) {
   if (!str) return '';
   let formatted = str;
+  formatted = formatted.replace(/==([^=\n]+)==/g, '<mark class="chat-key-highlight">$1</mark>');
   formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong class="chat-bold-highlight">$1</strong>');
   formatted = formatted.replace(/\*([^*]+)\*/g, '<em class="chat-italic-highlight">$1</em>');
   return formatted;
@@ -710,7 +711,7 @@ function formatChatResponseToHtml(text) {
   closeList();
   htmlResult += '</div>';
   return DOMPurify.sanitize(htmlResult, {
-    ALLOWED_TAGS: ['div', 'h2', 'h3', 'p', 'strong', 'em', 'blockquote', 'hr', 'ul', 'ol', 'li'],
+    ALLOWED_TAGS: ['div', 'h2', 'h3', 'p', 'strong', 'em', 'mark', 'blockquote', 'hr', 'ul', 'ol', 'li'],
     ALLOWED_ATTR: ['class'],
   });
 }
