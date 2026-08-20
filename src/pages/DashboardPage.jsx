@@ -1508,9 +1508,15 @@ export function DashboardPage({ user }) {
     try {
       const res = await fitmentorApi.getPlan(effectiveEmail);
       if (res?.plan?.planHtml) {
-        loadedPlanHtml = validatePlanForDisplay(res.plan.planHtml, Number(res.plan?.params?.days));
-        setPlanHtml(loadedPlanHtml);
-        setPlanParams(res.plan.params);
+        try {
+          loadedPlanHtml = validatePlanForDisplay(res.plan.planHtml, Number(res.plan?.params?.days));
+          setPlanHtml(loadedPlanHtml);
+          setPlanParams(res.plan.params);
+        } catch (validationError) {
+          console.warn('Ignoring an unrenderable saved plan:', validationError);
+          setPlanHtml(null);
+          setPlanParams(null);
+        }
       } else {
         setPlanHtml(null);
         setPlanParams(null);
@@ -1521,8 +1527,6 @@ export function DashboardPage({ user }) {
         const generated = await pollForGeneratedPlan(res.generation.requestId, Number(res.generation.days));
         setPlanHtml(generated.planHtml);
         setPlanParams(generated.params);
-      } else if (res?.generation?.status === 'error') {
-        setPlanError(res.generation.message || 'יצירת התוכנית האחרונה נכשלה');
       }
     } catch (err) {
       console.error('Error loading plan:', err);
@@ -1702,7 +1706,7 @@ export function DashboardPage({ user }) {
           )}
 
           {/* 2. No Plan State */}
-          {!loadingPlan && !planHtml && !isBuildingPlan && (
+          {!loadingPlan && !planHtml && !isBuildingPlan && !planError && (
             <div className="dash-empty-state">
               <div className="dash-empty-icon">🏋️</div>
               <h2>עדיין אין לך תוכנית אימונים</h2>
