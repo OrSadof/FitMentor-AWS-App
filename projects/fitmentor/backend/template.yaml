@@ -22,17 +22,9 @@ Parameters:
   FitMentorTableName:
     Type: String
     Default: FitMentorData
-  GoogleApiKey1:
+  OpenRouterApiKey:
     Type: String
-    Default: ""
-    NoEcho: true
-  GoogleApiKey2:
-    Type: String
-    Default: ""
-    NoEcho: true
-  GoogleApiKey3:
-    Type: String
-    Default: ""
+    Description: OpenRouter API key used exclusively with deepseek/deepseek-v4-flash-0731
     NoEcho: true
 
 Resources:
@@ -65,10 +57,7 @@ Resources:
       CodeUri: src/custom-message/
       Handler: index.handler
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action: ['logs:*']
-              Resource: '*'
+        - AWSLambdaBasicExecutionRole
       Environment:
         Variables:
           RESET_URL_BASE: !Ref ResetUrlBase
@@ -107,7 +96,6 @@ Resources:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
         - ALLOW_USER_SRP_AUTH
-        - ALLOW_ADMIN_USER_PASSWORD_AUTH
 
   FitMentorAdminsGroup:
     Type: AWS::Cognito::UserPoolGroup
@@ -135,6 +123,10 @@ Resources:
         AllowMethods: "'OPTIONS,POST,GET'"
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: "'*'"
+      Auth:
+        Authorizers:
+          FitMentorCognitoAuthorizer:
+            UserPoolArn: !GetAtt FitMentorUserPool.Arn
 
   # -----------------------------
   # Lambda Functions
@@ -146,8 +138,17 @@ Resources:
       CodeUri: src/logic/
       Handler: index.handler
       Policies:
-        - AmazonDynamoDBFullAccess
-        - AmazonCognitoPowerUser
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FitMentorTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:AdminListGroupsForUser
+                - cognito-idp:AdminDisableUser
+                - cognito-idp:AdminEnableUser
+              Resource: !GetAtt FitMentorUserPool.Arn
       Environment:
         Variables:
           COGNITO_USER_POOL_ID: !Ref FitMentorUserPool
@@ -159,6 +160,14 @@ Resources:
             RestApiId: !Ref FitMentorApi
             Path: /API
             Method: POST
+        AdminPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref FitMentorApi
+            Path: /Admin
+            Method: POST
+            Auth:
+              Authorizer: FitMentorCognitoAuthorizer
 
   FitMentorDashboardFunction:
     Type: AWS::Serverless::Function
@@ -166,13 +175,17 @@ Resources:
       FunctionName: FitMentorDashboard
       CodeUri: src/dashboard/
       Handler: index.handler
+      Timeout: 120
       Policies:
-        - AmazonDynamoDBFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FitMentorTable
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:FitMentorDashboard"
       Environment:
         Variables:
-          GOOGLE_API_KEY1: !Ref GoogleApiKey1
-          GOOGLE_API_KEY2: !Ref GoogleApiKey2
-          GOOGLE_API_KEY3: !Ref GoogleApiKey3
+          OPENROUTER_API_KEY: !Ref OpenRouterApiKey
       Events:
         ApiPost:
           Type: Api
@@ -180,6 +193,8 @@ Resources:
             RestApiId: !Ref FitMentorApi
             Path: /Dashboard
             Method: POST
+            Auth:
+              Authorizer: FitMentorCognitoAuthorizer
 
   FitMentorProgressFunction:
     Type: AWS::Serverless::Function
@@ -188,7 +203,8 @@ Resources:
       CodeUri: src/progress/
       Handler: index.handler
       Policies:
-        - AmazonDynamoDBFullAccess
+        - DynamoDBReadPolicy:
+            TableName: !Ref FitMentorTable
       Events:
         ApiPost:
           Type: Api
@@ -196,6 +212,8 @@ Resources:
             RestApiId: !Ref FitMentorApi
             Path: /Progress
             Method: POST
+            Auth:
+              Authorizer: FitMentorCognitoAuthorizer
 
   FitMentorTrainingLogFunction:
     Type: AWS::Serverless::Function
@@ -204,7 +222,8 @@ Resources:
       CodeUri: src/training/
       Handler: index.handler
       Policies:
-        - AmazonDynamoDBFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FitMentorTable
       Events:
         ApiPost:
           Type: Api
@@ -212,6 +231,8 @@ Resources:
             RestApiId: !Ref FitMentorApi
             Path: /TrainingLog
             Method: POST
+            Auth:
+              Authorizer: FitMentorCognitoAuthorizer
 
 Outputs:
   ApiInvokeUrl:

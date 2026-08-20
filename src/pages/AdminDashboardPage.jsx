@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import Chart from 'chart.js/auto';
 import { fitmentorApi } from '../api/fitmentorApi';
 
@@ -7,7 +7,6 @@ function fmtNumber(v) {
   if (!Number.isFinite(n)) return '--';
   try { return n.toLocaleString(); } catch { return String(n); }
 }
-
 function safeDateFromYmd(ymd) {
   const s = String(ymd || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -40,22 +39,6 @@ function formatHebrewMonthLabelFromYm(ym) {
   } catch {
     return String(ym || '');
   }
-}
-
-// Executive Vector SVG Icons
-function AdminShieldSVG() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="url(#shield-grad)" stroke="#fbbf24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <defs>
-        <linearGradient id="shield-grad" x1="4" y1="2" x2="20" y2="22" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#f59e0b" />
-          <stop offset="1" stopColor="#b45309" />
-        </linearGradient>
-      </defs>
-    </svg>
-  );
 }
 
 function UsersGroupSVG() {
@@ -155,9 +138,27 @@ function UserManagementSVG() {
   );
 }
 
+function isUserAdminRow(u) {
+  const role = (u?.role || u?.userRole || '').toLowerCase().trim();
+  return role === 'admin';
+}
+
+function getRealChartsData(apiCharts) {
+  const joinTrend = apiCharts?.joinTrend;
+  const dailyActivity = apiCharts?.dailyActivity;
+  if (!joinTrend || !Array.isArray(joinTrend.labels) || !Array.isArray(joinTrend.data)) {
+    throw new Error('AWS returned invalid registration chart data');
+  }
+  if (!dailyActivity || !Array.isArray(dailyActivity.labels) || !Array.isArray(dailyActivity.data)) {
+    throw new Error('AWS returned invalid activity chart data');
+  }
+  return { joinTrend, dailyActivity };
+}
+
+
 export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
-  const adminEmail = user?.email || localStorage.getItem('fitmentor_userEmail') || localStorage.getItem('fitmentor_userId') || localStorage.getItem('fitmentor_email') || 'orsadof@gmail.com';
-  const token = localStorage.getItem('fitmentor_idToken') || localStorage.getItem('fitmentor_accessToken') || '';
+  const adminEmail = user?.email || '';
+  const isVerifiedAdmin = user?.isAdmin === true;
 
   const [stats, setStats] = useState({ usersRegistered: 0, activeToday: 0, workoutsSaved: 0, aiCallsTotal: 0 });
   const [usersList, setUsersList] = useState([]);
@@ -174,130 +175,9 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
   const joinChartInst = useRef(null);
   const activityChartInst = useRef(null);
 
-  useEffect(() => {
-    // Check Role Access
-    const role = localStorage.getItem('fitmentor_role') || '';
-    const emailNorm = (adminEmail || '').toLowerCase().trim();
-    const isAdmin = role === 'Admin' || emailNorm === 'orsadof@gmail.com' || emailNorm === 'orhupro@gmail.com' || emailNorm === 'admin' || emailNorm.includes('admin');
-
-    if (!isAdmin) {
-      if (showToast) showToast('אין לך הרשאה לצפות בדף ניהול זה.', 'error');
-      if (onNavigate) onNavigate('landing');
-      return;
-    }
-
-    loadAdminDashboard();
-  }, [adminEmail]);
-
   const [apiError, setApiError] = useState(null);
 
-  const isUserAdminRow = (u) => {
-    const email = (u?.email || u?.username || '').toLowerCase().trim();
-    const role = (u?.role || u?.userRole || '').toLowerCase().trim();
-    return role === 'admin' || email === 'orsadof@gmail.com' || email === 'admin@fitmentor.com';
-  };
-
-  const isTestOrDebugUser = (u) => {
-    const email = (u?.email || u?.username || '').toLowerCase().trim();
-    return email.includes('check') || email.includes('test') || email.includes('nosymbols') || email.includes('user12345');
-  };
-
-  const getRealChartsData = (users, apiCharts) => {
-    // 1. Join Trend from Cloud or dynamically computed from actual Cognito registration dates
-    let joinTrend = apiCharts?.joinTrend;
-    if (!joinTrend || !Array.isArray(joinTrend.labels) || joinTrend.labels.length === 0) {
-      const now = new Date();
-      const monthKeys = [];
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-        monthKeys.push(key);
-      }
-      const joinCounts = Object.fromEntries(monthKeys.map(k => [k, 0]));
-      users.forEach(u => {
-        if (!u?.joined && !u?.createdAt) return;
-        const key = String(u.joined || u.createdAt).substring(0, 7);
-        if (key in joinCounts) {
-          joinCounts[key] += 1;
-        }
-      });
-      joinTrend = {
-        labels: monthKeys,
-        data: monthKeys.map(k => joinCounts[k])
-      };
-    }
-
-    // 2. Daily Activity from Cloud API
-    let dailyActivity = apiCharts?.dailyActivity;
-    if (!dailyActivity || !Array.isArray(dailyActivity.labels) || dailyActivity.labels.length === 0) {
-      const dayKeys = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        dayKeys.push(d.toISOString().split('T')[0]);
-      }
-      dailyActivity = {
-        labels: dayKeys,
-        data: dayKeys.map(() => 0)
-      };
-    }
-
-    return {
-      joinTrend,
-      dailyActivity
-    };
-  };
-
-  const loadAdminDashboard = async () => {
-    setLoading(true);
-    setApiError(null);
-
-    const storedToken = localStorage.getItem('fitmentor_idToken') || localStorage.getItem('fitmentor_accessToken') || token;
-
-    try {
-      let data = await fitmentorApi.adminGetDashboardData(adminEmail, storedToken);
-
-      if (data && typeof data.body === 'string') {
-        try {
-          const parsed = JSON.parse(data.body);
-          data = { ...data, ...parsed };
-        } catch { }
-      }
-
-      if (!data || (data?.statusCode && data.statusCode >= 400)) {
-        throw new Error(data?.message || data?.error || 'שגיאה בקבלת נתונים מהשרת ב-AWS');
-      }
-
-      const statsObj = data?.stats || {};
-      const rawUsers = Array.isArray(data?.users) ? data.users : [];
-      const nonAdminUsers = rawUsers.filter(u => !isUserAdminRow(u) && !isTestOrDebugUser(u));
-
-      const computedChartData = getRealChartsData(nonAdminUsers, data?.charts);
-
-      const finalStats = {
-        usersRegistered: typeof statsObj.usersRegistered === 'number' ? statsObj.usersRegistered : nonAdminUsers.length,
-        activeToday: typeof statsObj.activeToday === 'number' ? statsObj.activeToday : nonAdminUsers.filter(u => u.status === 'active').length,
-        workoutsSaved: typeof statsObj.workoutsSaved === 'number' ? statsObj.workoutsSaved : 0,
-        aiCallsTotal: typeof statsObj.aiCallsTotal === 'number' ? statsObj.aiCallsTotal : 0
-      };
-
-      setStats(finalStats);
-      setUsersList(nonAdminUsers);
-      initCharts(computedChartData);
-    } catch (err) {
-      console.error('Failed to fetch admin dashboard from AWS:', err);
-      const errMsg = err?.message || 'לא ניתן לתקשר עם בסיס הנתונים ב-AWS';
-      setApiError(errMsg);
-      setUsersList([]);
-      setStats({ usersRegistered: 0, activeToday: 0, workoutsSaved: 0, aiCallsTotal: 0 });
-      initCharts({ joinTrend: { labels: [], data: [] }, dailyActivity: { labels: [], data: [] } });
-      if (showToast) showToast(`שגיאה בטעינת נתונים מ-AWS: ${errMsg}`, 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const initCharts = (chartsData) => {
+  const initCharts = useCallback((chartsData) => {
     const join = chartsData?.joinTrend || {};
     const daily = chartsData?.dailyActivity || {};
 
@@ -331,10 +211,10 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
       joinChartInst.current = new Chart(ctx1, {
         type: 'line',
         data: {
-          labels: joinLabelsPretty.length > 0 ? joinLabelsPretty : ['מאי', 'יוני', 'יולי'],
+          labels: joinLabelsPretty,
           datasets: [{
             label: 'מצטרפים חדשים',
-            data: joinData.length > 0 ? joinData : [0, 0, 0],
+            data: joinData,
             borderColor: '#fbbf24',
             backgroundColor: gradient,
             borderWidth: 3.5,
@@ -415,10 +295,10 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
       activityChartInst.current = new Chart(ctx2, {
         type: 'bar',
         data: {
-          labels: dailyLabelsPretty.length > 0 ? dailyLabelsPretty : ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'],
+          labels: dailyLabelsPretty,
           datasets: [{
             label: 'התחברויות ייחודיות',
-            data: dailyData.length > 0 ? dailyData : [0, 0, 0, 0, 0, 0, 0],
+            data: dailyData,
             backgroundColor: barGradient,
             hoverBackgroundColor: barHoverGradient,
             borderRadius: 8,
@@ -477,7 +357,66 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
         }
       });
     }
-  };
+  }, []);
+
+  const loadAdminDashboard = useCallback(async () => {
+    setLoading(true);
+    setApiError(null);
+
+    try {
+      let data = await fitmentorApi.adminGetDashboardData();
+
+      if (data && typeof data.body === 'string') {
+        try {
+          const parsed = JSON.parse(data.body);
+          data = { ...data, ...parsed };
+        } catch { }
+      }
+
+      if (!data || (data?.statusCode && data.statusCode >= 400)) {
+        throw new Error(data?.message || data?.error || 'שגיאה בקבלת נתונים מהשרת ב-AWS');
+      }
+
+      const statsObj = data?.stats || {};
+      const rawUsers = Array.isArray(data?.users) ? data.users : [];
+      const nonAdminUsers = rawUsers.filter(u => !isUserAdminRow(u));
+
+      const computedChartData = getRealChartsData(data?.charts);
+
+      const finalStats = {
+        usersRegistered: statsObj.usersRegistered,
+        activeToday: statsObj.activeToday,
+        workoutsSaved: statsObj.workoutsSaved,
+        aiCallsTotal: statsObj.aiCallsTotal
+      };
+      if (Object.values(finalStats).some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+        throw new Error('AWS returned invalid dashboard statistics');
+      }
+
+      setStats(finalStats);
+      setUsersList(nonAdminUsers);
+      initCharts(computedChartData);
+    } catch (err) {
+      console.error('Failed to fetch admin dashboard from AWS:', err);
+      const errMsg = err?.message || 'לא ניתן לתקשר עם בסיס הנתונים ב-AWS';
+      setApiError(errMsg);
+      setUsersList([]);
+      setStats({ usersRegistered: 0, activeToday: 0, workoutsSaved: 0, aiCallsTotal: 0 });
+      initCharts({ joinTrend: { labels: [], data: [] }, dailyActivity: { labels: [], data: [] } });
+      if (showToast) showToast(`שגיאה בטעינת נתונים מ-AWS: ${errMsg}`, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [initCharts, showToast]);
+
+  useEffect(() => {
+    if (!isVerifiedAdmin) {
+      if (showToast) showToast('אין לך הרשאה לצפות בדף ניהול זה.', 'error');
+      if (onNavigate) onNavigate('landing');
+      return;
+    }
+    loadAdminDashboard();
+  }, [isVerifiedAdmin, loadAdminDashboard, onNavigate, showToast]);
 
   const handleToggleUserBlock = (targetUser) => {
     const status = String(targetUser.status || 'active');
@@ -494,13 +433,12 @@ export function AdminDashboardPage({ user, onNavigate, showToast, onLogout }) {
 
   const executeUserBlock = async (username, blocked) => {
     setIsSubmittingBlock(true);
-    const storedToken = localStorage.getItem('fitmentor_idToken') || localStorage.getItem('fitmentor_accessToken') || token;
     try {
       const targetUser = usersList.find(u => u.username === username || u.email === username);
       const email = targetUser?.email || username;
 
       // 1. Live call to AWS cloud
-      await fitmentorApi.adminSetUserBlocked(adminEmail, username, blocked, storedToken);
+      await fitmentorApi.adminSetUserBlocked(adminEmail, username, blocked);
 
       // 2. Update UI state on successful response
       setUsersList(prev => prev.map(u => {

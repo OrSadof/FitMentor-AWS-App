@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import Chart from 'chart.js/auto';
 import { fitmentorApi } from '../api/fitmentorApi';
+
+const EMPTY_OBJECT = Object.freeze({});
 
 /* ─── Vector SVG Icons ─── */
 const SvgFlame = ({ size = 28, color = "#f97316" }) => (
@@ -37,12 +39,14 @@ const SvgBrain = ({ size = 28, color = "#a855f7" }) => (
 );
 
 export function ProgressPage({ user }) {
-  const effectiveEmail = String(user?.email || localStorage.getItem('fitmentor_userId') || localStorage.getItem('userId') || '').trim();
+  const effectiveEmail = String(user?.email || '').trim();
   
   const [progressData, setProgressData] = useState(null);
   const [aiInsights, setAiInsights] = useState(null);
   const [aiInsightsLoading, setAiInsightsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [progressError, setProgressError] = useState('');
+  const [aiInsightsError, setAiInsightsError] = useState('');
   
   // Achievements state
   const [achievements, setAchievements] = useState(null);
@@ -75,70 +79,45 @@ export function ProgressPage({ user }) {
   const volumeChartInst = useRef(null);
   const balanceChartInst = useRef(null);
 
-  useEffect(() => {
-    loadData();
-  }, [effectiveEmail]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setAiInsightsLoading(true);
     setAchievementsLoading(true);
+    setProgressError('');
+    setAiInsightsError('');
     try {
-      let data = {};
-      if (effectiveEmail) {
-        data = await fitmentorApi.getProgressData(effectiveEmail).catch(() => ({}));
-      }
+      if (!effectiveEmail) throw new Error('Authentication required');
+      const data = await fitmentorApi.getProgressData(effectiveEmail);
       const normalized = normalizeProgressData(data);
-      const merged = mergeLocalLogsWithProgressData(normalized, effectiveEmail);
-      setProgressData(merged);
+      setProgressData(normalized);
+      setAchievements(Array.isArray(normalized.achievements) ? normalized.achievements : []);
+      setAchievementsLoading(false);
 
-      // Hydrate AI Insights
       try {
-        if (effectiveEmail) {
-          const logs = getRecentTrainingLogs(effectiveEmail, 20);
-          let insights = null;
-          for (let attempt = 0; attempt < 2; attempt++) {
-            insights = await fitmentorApi.getAiInsights(effectiveEmail, 30, logs).catch(() => null);
-            if (insights && Array.isArray(insights.recommendations) && insights.recommendations.length > 0) {
-              break;
-            }
-          }
-          if (insights) setAiInsights(insights);
-        }
+        const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30);
+        setAiInsights(insights);
       } catch (err) {
-        console.warn('AI Insights load error:', err);
+        console.error('AI Insights load error:', err);
+        setAiInsights(null);
+        setAiInsightsError(err?.message || 'DeepSeek recommendation analysis failed');
       } finally {
         setAiInsightsLoading(false);
       }
-
-      // Load AI Achievements from recent training logs
-      try {
-        const logs = getRecentTrainingLogs(effectiveEmail, 10);
-        if (logs.length > 0 && effectiveEmail) {
-          const achRes = await fitmentorApi.getAchievements(effectiveEmail, logs).catch(() => null);
-          const list = Array.isArray(achRes?.achievements) ? achRes.achievements : fallbackExtractAchievements(logs);
-          setAchievements(list);
-        } else {
-          setAchievements(fallbackExtractAchievements(logs));
-        }
-      } catch (err) {
-        console.warn('Achievements load error:', err);
-        const logs = getRecentTrainingLogs(effectiveEmail, 10);
-        setAchievements(fallbackExtractAchievements(logs));
-      } finally {
-        setAchievementsLoading(false);
-      }
     } catch (err) {
       console.error('Error loading progress:', err);
-      const empty = normalizeProgressData({});
-      const merged = mergeLocalLogsWithProgressData(empty, effectiveEmail);
-      setProgressData(merged);
+      setProgressError(err?.message || 'טעינת נתוני ההתקדמות מ-AWS נכשלה');
+      setProgressData(null);
       setAchievements([]);
       setAchievementsLoading(false);
+      setAiInsightsLoading(false);
     } finally {
       setLoading(false);
     }
-  };
+  }, [effectiveEmail]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // Data presence calculations
   const overviewObj = progressData?.overview || {};
@@ -147,7 +126,7 @@ export function ProgressPage({ user }) {
   const hasWeightData = Boolean(weightSeriesObj?.labels?.length > 0 && weightDataList.length > 0);
 
   const chartsObj = progressData?.charts || {};
-  const ex1rmByDay30 = overviewObj.exercise1rmByDay30 || {};
+  const ex1rmByDay30 = overviewObj.exercise1rmByDay30 || EMPTY_OBJECT;
   const exercise1RMObj = chartsObj.exercise1RM || chartsObj.exerciseOneRM;
   const availableExercises = exercise1RMObj ? (Array.isArray(exercise1RMObj.exercises) ? exercise1RMObj.exercises : Object.keys(exercise1RMObj.seriesByExercise || {})) : [];
 
@@ -160,7 +139,10 @@ export function ProgressPage({ user }) {
   const volumeObj = chartsObj.volume || chartsObj.volumeLoad;
   const hasVolumeData = Boolean(Array.isArray(volumeObj?.data) && volumeObj.data.length > 0 && volumeObj.data.some(v => Number(v) > 0));
 
-  const bodyBalance = computeBodyBalance(progressData, aiInsights);
+  const bodyBalance = React.useMemo(
+    () => computeBodyBalance(progressData, aiInsights),
+    [aiInsights, progressData]
+  );
   const hasBalanceData = Boolean(bodyBalance.groups && bodyBalance.groups.some(g => g.score > 0 || (g.workouts && g.workouts > 0)));
 
   // Render Bodyweight Chart
@@ -233,7 +215,7 @@ export function ProgressPage({ user }) {
         weightChartInst.current = null;
       }
     };
-  }, [progressData, hasWeightData]);
+  }, [hasWeightData, progressData, weightSeriesObj]);
 
   // Render 1RM & Volume Charts
   useEffect(() => {
@@ -368,7 +350,7 @@ export function ProgressPage({ user }) {
         volumeChartInst.current = null;
       }
     };
-  }, [progressData, selectedExercise1rm, selectedDay1rm, has1rmData, hasVolumeData]);
+  }, [currentEx1rm, ex1rmByDay30, exercise1RMObj, has1rmData, hasVolumeData, progressData, selectedDay1rm, selectedExercise1rm, series1rm, volumeObj]);
 
   // Render Body Balance Radar Chart
   useEffect(() => {
@@ -590,7 +572,7 @@ export function ProgressPage({ user }) {
         balanceChartInst.current = null;
       }
     };
-  }, [progressData, aiInsights, hasBalanceData]);
+  }, [aiInsights, bodyBalance, hasBalanceData, progressData]);
 
   // Calendar Helpers
   const normalizedHeat = coerceHeatmapYear(progressData?.heatmap);
@@ -680,7 +662,7 @@ export function ProgressPage({ user }) {
 
   // Selected Day Calories & Metadata
   const selectedCount = Number(normalizedHeat.byDateCount.get(calState.selectedIso) ?? 0);
-  const selectedCalories = getCaloriesForDate(calState.selectedIso, normalizedHeat.byDateCount, normalizedHeat.byDateCalories);
+  const selectedCalories = getCaloriesForDate(calState.selectedIso, normalizedHeat.byDateCalories);
   const selectedDateLabel = formatHebrewFullDate(calState.selectedIso);
 
   // Weight Stats
@@ -703,7 +685,10 @@ export function ProgressPage({ user }) {
   const workoutDays30 = Array.isArray(progressData?.overview?.workoutDays30) ? progressData.overview.workoutDays30 : [];
 
   // PRs & Recommendations
-  const prs = progressData?.prs || progressData?.personalRecords || [];
+  const prs = React.useMemo(
+    () => progressData?.prs || progressData?.personalRecords || [],
+    [progressData]
+  );
   const recs = aiInsights?.recommendations || aiInsights?.recs || [];
 
   // Process and unify PR & achievement items for Hall of Fame
@@ -713,14 +698,17 @@ export function ProgressPage({ user }) {
 
     if (Array.isArray(achievements) && achievements.length > 0) {
       achievements.forEach(ach => {
-        const title = ach.title || ach.category || '';
-        if (title && !seenTitles.has(title)) {
+        const title = String(ach?.title || '').trim();
+        const description = String(ach?.description || '').trim();
+        const category = String(ach?.category || '').trim();
+        const icon = String(ach?.icon || '').trim();
+        if (title && description && category && icon && !seenTitles.has(title)) {
           seenTitles.add(title);
           list.push({
             title,
-            value: ach.description || 'הישג שושג בהצלחה',
-            groupLabel: ach.category || 'הישג מפתח',
-            icon: ach.icon || '🏆',
+            value: description,
+            groupLabel: category,
+            icon,
             date: ach.date || '',
             isNew: true,
             weight: 0
@@ -731,8 +719,11 @@ export function ProgressPage({ user }) {
 
     if (Array.isArray(prs) && prs.length > 0) {
       prs.forEach(pr => {
-        const title = pr.title || pr.exercise || '';
-        if (title && !seenTitles.has(title)) {
+        const title = String(pr?.title || '').trim();
+        const value = String(pr?.value || '').trim();
+        const groupLabel = String(pr?.groupLabel || '').trim();
+        const icon = String(pr?.icon || '').trim();
+        if (title && value && groupLabel && icon && !seenTitles.has(title)) {
           seenTitles.add(title);
           let w = 0;
           if (pr.value) {
@@ -741,9 +732,9 @@ export function ProgressPage({ user }) {
           }
           list.push({
             title,
-            value: pr.value || 'שיא אישי',
-            groupLabel: pr.groupLabel || 'תרגיל',
-            icon: pr.icon || '🏋️‍♂️',
+            value,
+            groupLabel,
+            icon,
             date: pr.date || pr.meta || '',
             isNew: Boolean(pr.isNew),
             weight: w
@@ -796,6 +787,13 @@ export function ProgressPage({ user }) {
           <h1 className="page-title">מעקב התקדמות</h1>
           <p className="text-muted">הדופק של האימונים שלך, ביצועים, ותובנות חכמות.</p>
         </header>
+
+        {progressError && (
+          <div className="empty-state-card" role="alert">
+            <strong>טעינת נתוני AWS נכשלה</strong>
+            <p>{progressError}</p>
+          </div>
+        )}
 
         {/* Section 1: Consistency & Pulse */}
         <section className="section-block" aria-label="Consistency">
@@ -1109,6 +1107,11 @@ export function ProgressPage({ user }) {
                     <div className="rec-title">⏳ מנתח המלצות למתאמן...</div>
                     <div className="rec-text">מפיק המלצות חכמות בזמן אמת מתוך האימונים...</div>
                   </div>
+                ) : aiInsightsError ? (
+                  <div className="rec-item warning" role="alert">
+                    <div className="rec-title">ניתוח DeepSeek נכשל</div>
+                    <div className="rec-text">{aiInsightsError}</div>
+                  </div>
                 ) : recs.length === 0 ? (
                   <div className="rec-item">
                     <div className="rec-title">🤖 ממתין לניתוח המלצות למתאמן</div>
@@ -1153,6 +1156,7 @@ function normalizeProgressData(raw) {
     }));
   }
   const insights = raw?.insights || raw?.smartInsights || {};
+  const achievements = Array.isArray(raw?.achievements) ? raw.achievements : [];
 
   // Format bodyWeight labels from ISO dates to Hebrew if they are raw dates
   if (overview.bodyWeight && Array.isArray(overview.bodyWeight.labels)) {
@@ -1184,361 +1188,7 @@ function normalizeProgressData(raw) {
     });
   }
 
-  return { overview, heatmap, charts, prs, insights };
-}
-
-const CORE_MUSCLE_GROUPS = [
-  { key: 'chest', label: 'חזה', icon: '🏋️‍♂️', defaultEx: 'לחיצת חזה' },
-  { key: 'back', label: 'גב', icon: '🦅', defaultEx: 'פולי עליון / חתירה' },
-  { key: 'legs', label: 'רגליים', icon: '🦵', defaultEx: 'סקוואט' },
-  { key: 'shoulders', label: 'כתפיים', icon: '🎯', defaultEx: 'לחיצת כתפיים' },
-  { key: 'arms', label: 'ידיים', icon: '💪', defaultEx: 'כפילת מרפקים' },
-  { key: 'core', label: 'ליבה', icon: '⚡', defaultEx: 'פלאנק / כפיפות בטן' }
-];
-
-function buildUnifiedProgressMetrics(normalizedData, localLogsObj) {
-  const muscleVolume = { chest: 0, back: 0, legs: 0, shoulders: 0, arms: 0, core: 0 };
-  const bestByGroup = new Map();
-  const workoutVolumeByDate = new Map();
-
-  const recordCandidate = (groupKey, candidate) => {
-    const prev = bestByGroup.get(groupKey);
-    const candW = candidate.weight || 0;
-    const candR = candidate.reps || 0;
-    const candScore = candW * 100 + candR;
-
-    if (!prev) {
-      bestByGroup.set(groupKey, candidate);
-      return;
-    }
-    const prevW = prev.weight || 0;
-    const prevR = prev.reps || 0;
-    const prevScore = prevW * 100 + prevR;
-
-    if (candScore > prevScore) {
-      bestByGroup.set(groupKey, candidate);
-    }
-  };
-
-  // 1. Process local logs (if any exist)
-  const logEntries = Object.entries(localLogsObj || {});
-  logEntries.forEach(([dateStr, log]) => {
-    const exercises = Array.isArray(log?.exercises) ? log.exercises : [];
-    let dayVol = 0;
-
-    exercises.forEach(ex => {
-      const exName = String(ex.name || ex.exercise || '').trim();
-      if (!exName) return;
-
-      const groupKey = categorizeExerciseMuscleGroup(exName);
-      const sets = Array.isArray(ex.sets) ? ex.sets : [];
-
-      sets.forEach(s => {
-        const weight = Number(s.weight || 0);
-        const reps = Number(s.reps || 0);
-        if (weight > 0 || reps > 0) {
-          const setVol = weight > 0 ? (weight * reps) : reps;
-          dayVol += setVol;
-          muscleVolume[groupKey] = (muscleVolume[groupKey] || 0) + setVol;
-          const isRecent = dateStr && (new Date() - new Date(dateStr + 'T00:00:00')) < (14 * 24 * 60 * 60 * 1000);
-          recordCandidate(groupKey, {
-            groupKey,
-            exercise: exName,
-            weight,
-            reps,
-            value: weight > 0 ? `${weight} ק"ג × ${reps} חזרות` : `${reps} חזרות`,
-            meta: dateStr ? `שיא אישי · ${formatHebrewFullDate(dateStr)}` : 'שיא אישי',
-            isNew: Boolean(isRecent),
-            date: dateStr
-          });
-        }
-      });
-    });
-
-    if (dayVol > 0) {
-      workoutVolumeByDate.set(dateStr, Math.round(dayVol));
-    }
-  });
-
-  // 2. Process normalizedData.prs (from API or backend DB)
-  const existingPrs = normalizedData?.prs || normalizedData?.personalRecords || [];
-  (existingPrs || []).forEach(p => {
-    const title = String(p.title || p.exercise || p.name || '').trim();
-    if (!title) return;
-
-    const groupKey = categorizeExerciseMuscleGroup(title);
-    let weight = Number(p.weight || 0);
-    let reps = Number(p.reps || 0);
-    if (!weight && p.value) {
-      const match = String(p.value).match(/(\d+(?:\.\d+)?)\s*ק"ג(?:\s*×\s*(\d+))?/);
-      if (match) {
-        weight = Number(match[1] || 0);
-        reps = Number(match[2] || 1);
-      }
-    }
-
-    const dateStr = p.date || p.meta || '';
-    const isRecent = p.isNew || (dateStr && (new Date() - new Date(dateStr + 'T00:00:00')) < (14 * 24 * 60 * 60 * 1000));
-
-    recordCandidate(groupKey, {
-      groupKey,
-      exercise: title,
-      weight,
-      reps,
-      value: p.value || (weight > 0 ? `${weight} ק"ג × ${reps} חזרות` : 'שיא אישי'),
-      meta: p.meta || (dateStr ? `שיא אישי · ${formatHebrewFullDate(dateStr)}` : 'שיא אישי'),
-      isNew: Boolean(isRecent),
-      date: dateStr
-    });
-
-    if (p.date && weight > 0 && reps > 0) {
-      const dateOnly = p.date.includes('T') ? p.date.split('T')[0] : p.date;
-      const vol = weight * reps * 3;
-      workoutVolumeByDate.set(dateOnly, (workoutVolumeByDate.get(dateOnly) || 0) + vol);
-    }
-  });
-
-  // 3. Construct ONLY active PR Cards (0 to 6 max based on actual user data)
-  const finalPrs = [];
-  CORE_MUSCLE_GROUPS.forEach(grp => {
-    const best = bestByGroup.get(grp.key);
-    if (best) {
-      finalPrs.push({
-        groupLabel: grp.label,
-        icon: grp.icon,
-        title: best.exercise,
-        value: best.value,
-        meta: best.meta,
-        isNew: best.isNew,
-        hasData: true,
-        date: best.date
-      });
-    }
-  });
-
-  // 4. Construct Final Body Balance Radar Data (total volume per muscle group across all past trainings)
-  const balanceData = [
-    muscleVolume.chest,
-    muscleVolume.back,
-    muscleVolume.legs,
-    muscleVolume.shoulders,
-    muscleVolume.arms,
-    muscleVolume.core
-  ];
-
-  // 5. Construct Final Volume Chart Data
-  let volumeChart = normalizedData?.charts?.volume || normalizedData?.charts?.volumeLoad;
-  if (!volumeChart || !Array.isArray(volumeChart.data) || volumeChart.data.length === 0) {
-    if (workoutVolumeByDate.size > 0) {
-      const sortedDates = Array.from(workoutVolumeByDate.keys()).sort();
-      volumeChart = {
-        labels: sortedDates.map(d => formatYmdHe(d) || d),
-        data: sortedDates.map(d => workoutVolumeByDate.get(d))
-      };
-    }
-  }
-
-  return {
-    prs: finalPrs,
-    balance: {
-      labels: ['חזה', 'גב', 'רגליים', 'כתפיים', 'ידיים', 'ליבה'],
-      data: balanceData,
-      rawVolume: muscleVolume
-    },
-    volumeChart
-  };
-}
-
-function categorizeExerciseMuscleGroup(name) {
-  const s = String(name || '').toLowerCase().trim();
-  if (!s) return 'chest';
-
-  if (s.includes('חזה') || s.includes('bench') || s.includes('chest') || s.includes('fly') || s.includes('פרפר') || s.includes('מקבילים') || s.includes('פושאפס') || s.includes('שכיבות שמיכה')) {
-    return 'chest';
-  }
-  if (s.includes('גב') || s.includes('חתירה') || s.includes('row') || s.includes('pull') || s.includes('lat') || s.includes('מתח') || s.includes('דדליפט') || s.includes('deadlift') || s.includes('פולי')) {
-    return 'back';
-  }
-  if (s.includes('רגליים') || s.includes('סקוואט') || s.includes('squat') || s.includes('lunge') || s.includes('מכרעים') || s.includes('פשטת ברכיים') || s.includes('כפופת ברכיים') || s.includes('ברכיים') || s.includes('תאומים') || s.includes('calf') || s.includes('leg') || s.includes('היפ תראסט') || s.includes('hip thrust')) {
-    return 'legs';
-  }
-  if (s.includes('כתפיים') || s.includes('כתפיים') || s.includes('overhead') || s.includes('shoulder') || s.includes('lateral') || s.includes('ארנולד') || s.includes('לחיצת כתפיים') || s.includes('הרחקה')) {
-    return 'shoulders';
-  }
-  if (s.includes('ידיים') || s.includes('יד קדמית') || s.includes('יד אחורית') || s.includes('curl') || s.includes('bicep') || s.includes('tricep') || s.includes('פטישים') || s.includes('hammer') || s.includes('פשטת מרפקים') || s.includes('כפילת מרפקים')) {
-    return 'arms';
-  }
-  if (s.includes('ליבה') || s.includes('בטן') || s.includes('abs') || s.includes('plank') || s.includes('פלאנק') || s.includes('crunch') || s.includes('כפיפות בטן')) {
-    return 'core';
-  }
-
-  return 'chest';
-}
-
-function getAllUserTrainingLogs(userId) {
-  const combined = {};
-
-  if (userId) {
-    const keys = [
-      `fitmentor_user_logs_${userId}`,
-      `fitmentor_user_logs_${String(userId).toLowerCase().trim()}`,
-      `fitmentor_user_logs_${String(userId).toUpperCase().trim()}`
-    ];
-    keys.forEach(k => {
-      try {
-        const raw = localStorage.getItem(k);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') Object.assign(combined, parsed);
-        }
-      } catch {}
-    });
-  }
-
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('fitmentor_user_logs_')) {
-        const raw = localStorage.getItem(key);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') {
-            Object.assign(combined, parsed);
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error('Error scanning local logs:', e);
-  }
-
-  return combined;
-}
-
-function mergeLocalLogsWithProgressData(normalizedData, userId) {
-  const localLogs = getAllUserTrainingLogs(userId);
-  const localLogDates = Object.keys(localLogs).sort();
-  const hasLocalData = localLogDates.length > 0;
-
-  // Only compute unified metrics from local if we have local data
-  const metrics = hasLocalData ? buildUnifiedProgressMetrics(normalizedData, localLogs) : null;
-
-  // Start from the API/backend data
-  const insights = { ...(normalizedData.insights || {}) };
-  const charts = { ...(normalizedData.charts || {}) };
-  const overview = { ...(normalizedData.overview || {}) };
-
-  // Only override balance if local data produced non-zero values
-  if (metrics?.balance?.data && metrics.balance.data.some(v => v > 0)) {
-    insights.balance = metrics.balance;
-  }
-
-  // Only override volume if local data produced actual volume entries
-  if (metrics?.volumeChart?.data && metrics.volumeChart.data.some(v => v > 0)) {
-    charts.volume = metrics.volumeChart;
-  }
-
-  if (hasLocalData) {
-    // 1. Heatmap (Calendar) — merge local workout dates into heatmap
-    const existingHeatmap = Array.isArray(normalizedData.heatmap) ? [...normalizedData.heatmap] : [];
-    const existingDates = new Set(existingHeatmap.map(h => h.date));
-    localLogDates.forEach(d => {
-      if (!existingDates.has(d)) {
-        const log = localLogs[d];
-        const exCount = Array.isArray(log?.exercises) ? log.exercises.length : 1;
-        existingHeatmap.push({
-          date: d,
-          count: exCount,
-          calories: 220 + (exCount * 70)
-        });
-      }
-    });
-
-    // 2. Body Weight Chart — supplement from local if API didn't provide it
-    const apiHasBodyWeight = overview.bodyWeight?.data?.some(v => Number.isFinite(Number(v)) && Number(v) > 0);
-    if (!apiHasBodyWeight) {
-      const weightEntries = localLogDates
-        .map(d => ({ date: d, weight: Number(localLogs[d]?.bodyWeightKg) }))
-        .filter(x => Number.isFinite(x.weight) && x.weight > 0);
-
-      if (weightEntries.length > 0) {
-        overview.bodyWeight = {
-          labels: weightEntries.map(e => formatYmdHe(e.date) || e.date),
-          data: weightEntries.map(e => e.weight)
-        };
-      } else {
-        let userWeight = null;
-        try {
-          const p = localStorage.getItem('fitmentor_user_profile');
-          if (p) userWeight = Number(JSON.parse(p)?.weight);
-        } catch {}
-        if (userWeight && userWeight > 0) {
-          overview.bodyWeight = {
-            labels: localLogDates.map(d => formatYmdHe(d) || d),
-            data: localLogDates.map(() => userWeight)
-          };
-        }
-      }
-    }
-
-    // 3. 1RM Exercises & Series — supplement from local if API didn't provide it
-    const apiHas1RM = charts.exercise1RM?.exercises?.length > 0;
-    if (!apiHas1RM) {
-      const seriesByExercise = {};
-      const exercisesSet = new Set();
-      const ex1rmByDay30 = {};
-
-      localLogDates.forEach(d => {
-        const log = localLogs[d];
-        if (log && Array.isArray(log.exercises)) {
-          ex1rmByDay30[d] = {};
-          log.exercises.forEach(ex => {
-            if (!ex.name && !ex.exercise) return;
-            const exName = String(ex.name || ex.exercise).trim();
-            if (!exName) return;
-            exercisesSet.add(exName);
-
-            let max1RM = 0;
-            if (Array.isArray(ex.sets)) {
-              ex.sets.forEach(s => {
-                const w = Number(s.weight || 0);
-                const r = Number(s.reps || 0);
-                if (w > 0) {
-                  const est1RM = r > 1 ? Math.round(w * (1 + r / 30)) : w;
-                  if (est1RM > max1RM) max1RM = est1RM;
-                }
-              });
-            }
-            if (max1RM > 0) {
-              ex1rmByDay30[d][exName] = max1RM;
-            }
-          });
-        }
-      });
-
-      const exercisesList = Array.from(exercisesSet);
-      exercisesList.forEach(exName => {
-        seriesByExercise[exName] = localLogDates.map(d => {
-          return ex1rmByDay30[d]?.[exName] || null;
-        });
-      });
-
-      overview.workoutDays30 = localLogDates;
-      overview.exercise1rmByDay30 = ex1rmByDay30;
-
-      charts.exercise1RM = {
-        exercises: exercisesList,
-        seriesByExercise,
-        labels: localLogDates.map(d => formatYmdHe(d) || d)
-      };
-    }
-
-    const prs = metrics?.prs || normalizedData.prs || [];
-    return { ...normalizedData, overview, heatmap: existingHeatmap, charts, prs, insights };
-  }
-
-  // No local data — just pass through the API data with the (preserved) insights/charts
-  return { ...normalizedData, overview, charts, insights };
+  return { overview, heatmap, charts, prs, insights, achievements };
 }
 
 function coerceHeatmapYear(input) {
@@ -1554,12 +1204,10 @@ function coerceHeatmapYear(input) {
   return { byDateCount, byDateCalories };
 }
 
-function getCaloriesForDate(iso, byDateCount, byDateCalories) {
+function getCaloriesForDate(iso, byDateCalories) {
   const fromData = Number(byDateCalories?.get(iso));
   if (Number.isFinite(fromData)) return fromData;
-  const count = Number(byDateCount?.get(iso) ?? 0);
-  if (!Number.isFinite(count) || count <= 0) return 0;
-  return 220 + count * 140;
+  return 0;
 }
 
 function toISODate(d) {
@@ -1613,13 +1261,6 @@ function formatRelativeTimeHe(dateStr) {
   }
 }
 
-function defaultRecTitle(type) {
-  if (type === 'neglect') return '⚠️ נקודת חולשה';
-  if (type === 'stall') return '📉 זיהוי תקיעות';
-  if (type === 'progression') return '🚀 הצעת התקדמות';
-  return '💡 טיפ';
-}
-
 const BALANCE_MUSCLE_GROUPS = [
   { key: 'chest', label: 'חזה', icon: '🏋️‍♂️' },
   { key: 'back', label: 'גב', icon: '🦅' },
@@ -1663,102 +1304,4 @@ function computeBodyBalance(progressData, aiInsights) {
     hasData: groups.some(g => g.volume > 0),
     maxRaw
   };
-}
-
-function formatVolume(v) {
-  const n = Number(v) || 0;
-  if (n >= 1000) {
-    const tons = n / 1000;
-    return `${(Math.round(tons * 10) / 10).toLocaleString('en-US')} טון`;
-  }
-  return `${Math.round(n).toLocaleString('en-US')} ק"ג`;
-}
-
-function getRecentTrainingLogs(userId, count = 10) {
-  try {
-    const logs = getAllUserTrainingLogs(userId);
-    return Object.entries(logs)
-      .sort(([dateA], [dateB]) => dateB.localeCompare(dateA))
-      .slice(0, count)
-      .map(([date, log]) => ({
-        date,
-        notes: log?.notes || '',
-        exercises: (log?.exercises || []).map(ex => ({
-          name: ex.name || ex.exercise,
-          sets: (ex.sets || []).map(s => ({
-            weight: Number(s.weight) || 0,
-            reps: Number(s.reps) || 0
-          }))
-        }))
-      }));
-  } catch (e) {
-    console.error('Error reading training logs for achievements:', e);
-    return [];
-  }
-}
-
-function fallbackExtractAchievements(logs) {
-  const achievements = [];
-  if (!Array.isArray(logs) || logs.length === 0) return achievements;
-
-  const prMap = new Map();
-  let totalVolumeAll = 0;
-
-  logs.forEach(log => {
-    const dateStr = log.date || '';
-    (log.exercises || []).forEach(ex => {
-      const exName = String(ex.name || '').trim();
-      if (!exName) return;
-      (ex.sets || []).forEach(s => {
-        const w = Number(s.weight || 0);
-        const r = Number(s.reps || 0);
-        if (w > 0 || r > 0) {
-          totalVolumeAll += (w * (r || 1));
-          const prev = prMap.get(exName);
-          if (!prev || w > prev.weight || (w === prev.weight && r > prev.reps)) {
-            prMap.set(exName, { exercise: exName, weight: w, reps: r, date: dateStr });
-          }
-        }
-      });
-    });
-  });
-
-  // Top PRs
-  const topPrs = Array.from(prMap.values())
-    .sort((a, b) => (b.weight * 100 + b.reps) - (a.weight * 100 + a.reps))
-    .slice(0, 4);
-
-  topPrs.forEach(pr => {
-    achievements.push({
-      icon: '🏆',
-      category: 'שיא אישי',
-      title: `${pr.exercise} ${pr.weight > 0 ? pr.weight + ' ק"ג' : ''}`,
-      description: `שברת שיא אישי עם ${pr.weight > 0 ? pr.weight + ' ק"ג × ' : ''}${pr.reps} חזרות!`,
-      date: pr.date
-    });
-  });
-
-  // Consistency achievement
-  if (logs.length >= 3) {
-    achievements.push({
-      icon: '🔥',
-      category: 'רצף אימונים',
-      title: `${logs.length} אימונים שתועדו`,
-      description: 'התמדה מרשימה באימונים! שומר על נפח עבודה גבוה.',
-      date: logs[0]?.date || ''
-    });
-  }
-
-  // Volume achievement
-  if (totalVolumeAll > 1000) {
-    achievements.push({
-      icon: '⚡',
-      category: 'נפח עבודה',
-      title: `סה"כ ${Math.round(totalVolumeAll)} ק"ג`,
-      description: 'נפח עבודה כולל מרשים ביותר שהורם באימונים האחרונים!',
-      date: logs[0]?.date || ''
-    });
-  }
-
-  return achievements;
 }

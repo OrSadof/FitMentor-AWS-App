@@ -1,73 +1,64 @@
-const API_BASE_URL = "https://8wc1g61715.execute-api.il-central-1.amazonaws.com/prod";
-const API_FALLBACK_URL = "https://jctrvppwp5.execute-api.us-east-1.amazonaws.com/prod";
+const API_BASE_URL = String(
+  import.meta.env.VITE_API_BASE_URL || "https://8wc1g61715.execute-api.il-central-1.amazonaws.com/prod"
+).replace(/\/$/, "");
 
-async function apiRequest(endpoint, payload, token = null) {
-  const urls = [
-    `${API_BASE_URL}/${endpoint}`,
-    `${API_FALLBACK_URL}/${endpoint}`
-  ];
+function getIdToken() {
+  return localStorage.getItem("fitmentor_idToken") || "";
+}
 
+async function apiRequest(endpoint, payload, { authenticated = false } = {}) {
   const headers = { "Content-Type": "application/json" };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (authenticated) {
+    const token = getIdToken();
+    if (!token) throw new Error("Authentication required");
+    headers.Authorization = `Bearer ${token}`;
   }
 
-  let lastError = null;
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/${endpoint}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("Unable to reach the AWS API");
+  }
 
-  for (const url of urls) {
+  const rawText = await response.text().catch(() => "");
+  let data = {};
+  if (rawText) {
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload)
-      });
-
-      const rawText = await res.text().catch(() => "");
-      let data = {};
-      if (rawText) {
-        try { data = JSON.parse(rawText); } catch { data = { rawText }; }
-      }
-
-      // Automatically unwrap API Gateway proxy response body if present
-      if (data && typeof data.body === 'string') {
-        try {
-          const bodyObj = JSON.parse(data.body);
-          data = { ...data, ...bodyObj };
-        } catch { }
-      }
-
-      if (res.ok && data) {
-        if (data.statusCode && data.statusCode >= 400) {
-          const message = data.message || data.error || `HTTP error ${data.statusCode}`;
-          const err = new Error(message);
-          err.status = data.statusCode;
-          err.data = data;
-          throw err;
-        }
-        return data;
-      }
-
-      // Don't retry on HTTP errors (4xx/5xx) – they'll fail again
-      const message = data.message || data.error || `HTTP error ${res.status}`;
-      const err = new Error(message);
-      err.status = res.status;
-      err.data = data;
-      throw err;
-    } catch (err) {
-      lastError = err;
-      // Only retry on network errors (no .status means fetch itself failed)
-      if (err.status) {
-        break;
-      }
+      data = JSON.parse(rawText);
+    } catch {
+      throw new Error("AWS returned an invalid response");
     }
   }
 
-  console.error(`API Error on ${endpoint}:`, lastError);
-  throw lastError;
+  if (data && typeof data.body === "string") {
+    try {
+      data = { ...data, ...JSON.parse(data.body) };
+    } catch {
+      throw new Error("AWS returned an invalid response body");
+    }
+  }
+
+  const effectiveStatus = Number(data?.statusCode) || response.status;
+  if (!response.ok || effectiveStatus >= 400) {
+    if (authenticated && effectiveStatus === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("fitmentor:auth-expired"));
+    }
+    const error = new Error(data?.message || data?.error || `AWS request failed (${effectiveStatus})`);
+    error.status = effectiveStatus;
+    throw error;
+  }
+
+  return data;
 }
 
+const cloudRequest = (endpoint, payload) => apiRequest(endpoint, payload, { authenticated: true });
+
 export const fitmentorApi = {
-  // Logic Lambda (/API)
   login: (email, password) =>
     apiRequest("API", { action: "login", userId: email, payload: { password } }),
 
@@ -86,51 +77,32 @@ export const fitmentorApi = {
   confirmForgotPassword: (email, code, newPassword) =>
     apiRequest("API", { action: "confirmForgotPassword", userId: email, payload: { code, newPassword } }),
 
-  adminGetDashboardData: (adminEmail, token) =>
-    apiRequest("API", { action: "adminGetDashboardData", userId: adminEmail, payload: { limit: 200 } }, token),
+  adminGetDashboardData: () =>
+    cloudRequest("Admin", { action: "adminGetDashboardData", payload: { limit: 200 } }),
 
-  adminSetUserBlocked: (adminEmail, targetUsername, blocked, token) =>
-    apiRequest("API", { action: "adminSetUserBlocked", userId: adminEmail, payload: { username: targetUsername, blocked } }, token),
+  adminSetUserBlocked: (_adminEmail, targetUsername, blocked) =>
+    cloudRequest("Admin", { action: "adminSetUserBlocked", payload: { username: targetUsername, blocked } }),
 
-  // Dashboard Lambda (/Dashboard)
-  getPlan: (userId) =>
-    apiRequest("Dashboard", { action: "getPlan", userId }),
+  getPlan: () => cloudRequest("Dashboard", { action: "getPlan" }),
+  generatePlan: (_userId, params) => cloudRequest("Dashboard", { action: "generatePlan", payload: params }),
+  savePlan: (_userId, planHtml, params) =>
+    cloudRequest("Dashboard", { action: "savePlan", payload: { planHtml, params } }),
+  deletePlan: () => cloudRequest("Dashboard", { action: "deletePlan" }),
+  chat: (_userId, message, _userName, _sessions, activeSessionId = null) =>
+    cloudRequest("Dashboard", { action: "chat", payload: { message, activeSessionId } }),
+  getChatHistory: () => cloudRequest("Dashboard", { action: "getChatHistory" }),
+  saveChatHistory: (_userId, sessions) =>
+    cloudRequest("Dashboard", { action: "saveChatHistory", payload: { sessions } }),
+  getAiInsights: (_userId, days = 30) =>
+    cloudRequest("Dashboard", { action: "getAiInsights", payload: { days } }),
 
-  generatePlan: (userId, params) =>
-    apiRequest("Dashboard", { action: "generatePlan", userId, payload: params }),
+  getProgressData: (_userId, days = 365) =>
+    cloudRequest("Progress", { action: "getProgressData", payload: { days } }),
 
-  savePlan: (userId, planHtml, params) =>
-    apiRequest("Dashboard", { action: "savePlan", userId, payload: { planHtml, params } }),
-
-  deletePlan: (userId) =>
-    apiRequest("Dashboard", { action: "deletePlan", userId }),
-
-  chat: (userId, message, userName, sessions = null, activeSessionId = null) =>
-    apiRequest("Dashboard", { action: "chat", userId, payload: { message, userName, sessions, activeSessionId } }),
-
-  getChatHistory: (userId) =>
-    apiRequest("Dashboard", { action: "getChatHistory", userId }),
-
-  saveChatHistory: (userId, sessions) =>
-    apiRequest("Dashboard", { action: "saveChatHistory", userId, payload: { sessions } }),
-
-  getAiInsights: (userId, days = 30, logs = []) =>
-    apiRequest("Dashboard", { action: "getAiInsights", userId, payload: { days, logs } }),
-
-  getAchievements: (userId, logs) =>
-    apiRequest("Dashboard", { action: "getAchievements", userId, payload: { logs } }),
-
-  // Progress Lambda (/Progress)
-  getProgressData: (userId, days = 365) =>
-    apiRequest("Progress", { action: "getProgressData", userId, payload: { days } }),
-
-  // Training Log Lambda (/TrainingLog)
-  saveWorkoutLog: (userId, date, logData) =>
-    apiRequest("TrainingLog", { action: "saveWorkoutLog", userId, payload: { date, log: logData } }),
-
-  getWorkoutLog: (userId, date) =>
-    apiRequest("TrainingLog", { action: "getWorkoutLog", userId, payload: { date } }),
-
-  deleteWorkoutLog: (userId, date) =>
-    apiRequest("TrainingLog", { action: "deleteWorkoutLog", userId, payload: { date } })
+  saveWorkoutLog: (_userId, date, logData) =>
+    cloudRequest("TrainingLog", { action: "saveWorkoutLog", payload: { date, log: logData } }),
+  getWorkoutLog: (_userId, date) =>
+    cloudRequest("TrainingLog", { action: "getWorkoutLog", payload: { date } }),
+  deleteWorkoutLog: (_userId, date) =>
+    cloudRequest("TrainingLog", { action: "deleteWorkoutLog", payload: { date } }),
 };

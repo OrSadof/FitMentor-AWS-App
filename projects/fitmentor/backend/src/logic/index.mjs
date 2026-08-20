@@ -8,14 +8,13 @@ import {
   ConfirmForgotPasswordCommand,
   ResendConfirmationCodeCommand,
   InitiateAuthCommand,
-  AdminInitiateAuthCommand,
   ListUsersCommand,
   AdminDisableUserCommand,
   AdminEnableUserCommand,
-  AdminAddUserToGroupCommand,
   AdminListGroupsForUserCommand,
   ListUsersInGroupCommand
 } from "@aws-sdk/client-cognito-identity-provider";
+import { errorResponse, getAuthenticatedIdentity, HttpError, requireAdmin } from "./auth.mjs";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -30,13 +29,12 @@ const METRICS_USER_ID = "__METRICS__";
 const METRICS_TOTAL_KEY = "TOTAL";
 const USER_ACTIVITY_KEY = "UserActivity";
 
-function parseJwtPayload(token) {
+function decodeCognitoTokenPayload(token) {
   try {
-    const base64Url = token.split('.')[1];
+    const base64Url = String(token || "").split('.')[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = Buffer.from(base64, 'base64').toString('utf8');
-    return JSON.parse(jsonPayload);
-  } catch (e) {
+    return JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+  } catch {
     return {};
   }
 }
@@ -160,6 +158,24 @@ async function scanUserActivityItems() {
   return items;
 }
 
+async function countSavedWorkoutLogs() {
+  let count = 0;
+  let exclusiveStartKey;
+  do {
+    const response = await docClient.send(new ScanCommand({
+      TableName: TABLE_NAME,
+      Select: "COUNT",
+      FilterExpression: "begins_with(#dataType, :prefix)",
+      ExpressionAttributeNames: { "#dataType": "DataType" },
+      ExpressionAttributeValues: { ":prefix": "TrainingLog_" },
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+    count += Number(response.Count || 0);
+    exclusiveStartKey = response.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return count;
+}
+
 async function getMetricsTotals() {
   const res = await docClient.send(new GetCommand({
     TableName: TABLE_NAME,
@@ -181,7 +197,6 @@ async function listAllCognitoUsers(limit = 60) {
     }));
     users.push(...(res.Users || []));
     paginationToken = res.PaginationToken;
-    if (users.length >= 500) break;
   } while (paginationToken);
 
   return users;
@@ -205,34 +220,15 @@ async function getAllAdminUsernames() {
       });
       nextToken = res.NextToken;
     } while (nextToken);
-  } catch (e) {
+  } catch (error) {
+    console.error("[ADMIN_GROUP_LOOKUP_FAILED]", error);
+    throw new HttpError(502, "Unable to verify Cognito administrator membership");
   }
   return adminSet;
 }
 
-const KNOWN_ADMIN_EMAILS = new Set(["orsadof@gmail.com", "orsadof", "orhupro@gmail.com", "admin@fitmentor.com"]);
-
-function isAuthorizedAdmin(adminEmail, userRole = "User") {
-  if (userRole === "Admin") return true;
-  const norm = normalizeEmail(adminEmail);
-  if (!norm) return false;
-  if (KNOWN_ADMIN_EMAILS.has(norm) || norm.includes("admin") || norm.includes("orsadof")) return true;
-  return false;
-}
-
-async function handleAdminGetDashboardData(adminEmail, payload = {}, userRole = "User", authHeader = "") {
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return { statusCode: 401, body: JSON.stringify({ message: "גישה נדחתה: נדרש אסימון אימות בתוקף (JWT Token)" }) };
-  }
-
-  const token = authHeader.substring(7).trim();
-  if (!token) {
-    return { statusCode: 401, body: JSON.stringify({ message: "אסימון אימות ריק או לא תקין" }) };
-  }
-
-  if (!isAuthorizedAdmin(adminEmail, userRole)) {
-    return { statusCode: 403, body: JSON.stringify({ message: "אין לך הרשאה: רק מנהלי מערכת (Admins) מורשים לגשת" }) };
-  }
+async function handleAdminGetDashboardData(identity, payload = {}) {
+  requireAdmin(identity);
 
   const limit = Number(payload.limit) || 100;
   const [cognitoUsers, adminUsernames] = await Promise.all([
@@ -245,33 +241,34 @@ async function handleAdminGetDashboardData(adminEmail, payload = {}, userRole = 
     .filter(u => {
         const uEmail = normalizeEmail(u?.email);
         const uUsername = normalizeEmail(u?.username);
-        const callerEmail = normalizeEmail(adminEmail);
-        
-        const isCaller = (uEmail === callerEmail || uUsername === callerEmail || uEmail.includes("orsadof") || uUsername.includes("orsadof"));
-        const isTestUser = (uEmail.includes("check") || uEmail.includes("test") || uEmail.includes("nosymbols") || uEmail.includes("user12345"));
+        const callerEmail = normalizeEmail(identity.userId);
+        const isCaller = uEmail === callerEmail || uUsername === callerEmail;
         const isInAdminGroup = adminUsernames.has(uEmail) || adminUsernames.has(uUsername);
 
-        return !isCaller && !isInAdminGroup && !isTestUser;
+        return !isCaller && !isInAdminGroup;
     });
 
-  const totals = await getMetricsTotals();
-  const rawWorkouts = Number(totals.workoutsSavedTotal || 0);
-  const rawAiCalls = Number(totals.aiCallsTotal || 0);
+  const [totals, workoutsSavedTotal] = await Promise.all([
+    getMetricsTotals(),
+    countSavedWorkoutLogs(),
+  ]);
+  const aiCallsTotal = Number(totals.aiCallsTotal || 0);
 
-  // Exclude development test inflation from totals
-  const workoutsSavedTotal = rawWorkouts > 20 ? 2 : (rawWorkouts || 2);
-  const aiCallsTotal = rawAiCalls > 50 ? 6 : (rawAiCalls || 6);
-
-  const activities = await scanUserActivityItems();
+  const regularUserIds = new Set(validClientUsers.flatMap((user) => [
+    normalizeEmail(user?.email),
+    normalizeEmail(user?.username),
+  ]).filter(Boolean));
+  const activities = (await scanUserActivityItems())
+    .filter((activity) => regularUserIds.has(normalizeEmail(activity?.UserID)));
   const todayUtc = toYmd(new Date());
   const todayIl = toYmdInTimeZone(new Date(), "Asia/Jerusalem");
 
   const activeTodayUtc = activities.filter(a => String(a.lastLoginDate || "") === todayUtc).length;
-  const activeTodayIl = Math.max(1, activities.filter(a => {
+  const activeTodayIl = activities.filter(a => {
     const ts = a?.lastLoginAt;
     if (!ts) return false;
     return toYmdInTimeZone(ts, "Asia/Jerusalem") === todayIl;
-  }).length);
+  }).length;
 
   const now = new Date();
   const monthKeys = [];
@@ -292,11 +289,11 @@ async function handleAdminGetDashboardData(adminEmail, payload = {}, userRole = 
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setUTCDate(d.getUTCDate() - i);
-    dayKeys.push(toYmd(d));
+    dayKeys.push(toYmdInTimeZone(d, "Asia/Jerusalem"));
   }
   const dailyCounts = Object.fromEntries(dayKeys.map(k => [k, 0]));
   for (const a of activities) {
-    const d = String(a.lastLoginDate || "");
+    const d = a?.lastLoginAt ? toYmdInTimeZone(a.lastLoginAt, "Asia/Jerusalem") : "";
     if (d in dailyCounts) dailyCounts[d] += 1;
   }
 
@@ -319,10 +316,8 @@ async function handleAdminGetDashboardData(adminEmail, payload = {}, userRole = 
   };
 }
 
-async function handleAdminGetActivityDebug(adminEmail, userRole = "User") {
-  if (!isAuthorizedAdmin(adminEmail, userRole)) {
-    return { statusCode: 403, body: JSON.stringify({ message: "אין לך הרשאה" }) };
-  }
+async function handleAdminGetActivityDebug(identity) {
+  requireAdmin(identity);
 
   const activities = await scanUserActivityItems();
   const todayUtc = toYmd(new Date());
@@ -350,10 +345,8 @@ async function handleAdminGetActivityDebug(adminEmail, userRole = "User") {
   };
 }
 
-async function handleAdminSetUserBlocked(adminEmail, payload = {}, userRole = "User") {
-  if (!isAuthorizedAdmin(adminEmail, userRole)) {
-    return { statusCode: 403, body: JSON.stringify({ message: "אין לך הרשאה" }) };
-  }
+async function handleAdminSetUserBlocked(identity, payload = {}) {
+  requireAdmin(identity);
   requireEnv("COGNITO_USER_POOL_ID", USER_POOL_ID);
 
   const username = String(payload.username || "").trim();
@@ -362,10 +355,18 @@ async function handleAdminSetUserBlocked(adminEmail, payload = {}, userRole = "U
     return { statusCode: 400, body: JSON.stringify({ message: "Missing username" }) };
   }
 
-  const callerEmail = normalizeEmail(adminEmail);
+  const callerEmail = normalizeEmail(identity.userId);
   const targetUsername = normalizeEmail(username);
   if (targetUsername === callerEmail) {
     return { statusCode: 403, body: JSON.stringify({ message: "Cannot modify this user" }) };
+  }
+
+  const targetGroups = await cognito.send(new AdminListGroupsForUserCommand({
+    UserPoolId: USER_POOL_ID,
+    Username: username,
+  }));
+  if ((targetGroups.Groups || []).some((group) => group.GroupName === "Admins")) {
+    return { statusCode: 403, body: JSON.stringify({ message: "Administrator accounts cannot be modified here" }) };
   }
 
   if (blocked) {
@@ -377,59 +378,12 @@ async function handleAdminSetUserBlocked(adminEmail, payload = {}, userRole = "U
   return { statusCode: 200, body: JSON.stringify({ message: blocked ? "User blocked" : "User unblocked" }) };
 }
 
-async function handleCognitoTrigger(event) {
-  const triggerSource = String(event.triggerSource || "");
-  const email = normalizeEmail(event?.request?.userAttributes?.email || event.userName || "");
-
-  if (!email) return;
-
-  if (triggerSource === "PostAuthentication_Authentication") {
-    await upsertUserActivity(email, { lastAuthTriggerSource: triggerSource });
-  }
-  if (triggerSource === "PostConfirmation_ConfirmSignUp") {
-    try {
-      await docClient.send(new UpdateCommand({
-        TableName: TABLE_NAME,
-        Key: { UserID: email, DataType: USER_ACTIVITY_KEY },
-        UpdateExpression: "SET confirmedAt = :now, updatedAt = :now",
-        ExpressionAttributeValues: { ":now": new Date().toISOString() }
-      }));
-    } catch (dbError) {
-    }
-
-    try {
-      const groupsRes = await cognito.send(new AdminListGroupsForUserCommand({
-        UserPoolId: USER_POOL_ID,
-        Username: event.userName
-      }));
-      const groups = (groupsRes.Groups || []).map(g => g.GroupName);
-      
-      if (!groups.includes("Admins")) {
-        await cognito.send(new AdminAddUserToGroupCommand({
-          UserPoolId: USER_POOL_ID,
-          Username: event.userName,
-          GroupName: "Users"
-        }));
-      }
-    } catch (groupError) {
-    }
-  }
-}
-
 export const handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
   };
-
-  if (event?.triggerSource) {
-    try {
-      await handleCognitoTrigger(event);
-    } catch (e) {
-    }
-    return event;
-  }
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers, body: '' };
@@ -438,36 +392,20 @@ export const handler = async (event) => {
   try {
     const requestBody = event.body ? JSON.parse(event.body) : event;
     const { action, userId, payload = {} } = requestBody;
+    if (!action) throw new HttpError(400, "Missing action");
 
-    if (!userId) {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing userId" }) };
-    }
+    const isAdminAction = action.startsWith("admin");
+    const identity = isAdminAction ? getAuthenticatedIdentity(event) : null;
+    if (identity) requireAdmin(identity);
 
-    const email = userId.toLowerCase().trim();
+    const email = identity?.userId || normalizeEmail(userId);
+    if (!email) throw new HttpError(400, "Missing userId");
     let responseBody = {};
-
-    const authHeader = event.headers?.Authorization || event.headers?.authorization || "";
-    let userRole = "User";
-    if (authHeader.startsWith("Bearer ")) {
-      try {
-        const token = authHeader.substring(7);
-        const decoded = parseJwtPayload(token);
-        const groups = decoded['cognito:groups'] || [];
-        const tokenEmail = normalizeEmail(decoded.email || decoded['cognito:username'] || decoded.username || "");
-        if (groups.includes("Admins") || KNOWN_ADMIN_EMAILS.has(tokenEmail) || tokenEmail.includes("admin")) {
-          userRole = "Admin";
-        }
-      } catch (e) {
-      }
-    }
-    if (KNOWN_ADMIN_EMAILS.has(email) || email.includes("admin")) {
-      userRole = "Admin";
-    }
 
     switch (action) {
 
       case "adminGetDashboardData": {
-        const res = await handleAdminGetDashboardData(email, payload, userRole, authHeader);
+        const res = await handleAdminGetDashboardData(identity, payload);
         return {
           statusCode: res.statusCode,
           headers,
@@ -476,7 +414,7 @@ export const handler = async (event) => {
       }
 
       case "adminSetUserBlocked": {
-        const res = await handleAdminSetUserBlocked(email, payload, userRole);
+        const res = await handleAdminSetUserBlocked(identity, payload);
         return {
           statusCode: res.statusCode,
           headers,
@@ -485,7 +423,7 @@ export const handler = async (event) => {
       }
 
       case "adminGetActivityDebug": {
-        const res = await handleAdminGetActivityDebug(email, userRole);
+        const res = await handleAdminGetActivityDebug(identity);
         return {
           statusCode: res.statusCode,
           headers,
@@ -507,7 +445,7 @@ export const handler = async (event) => {
 
           responseBody = { message: "Verification link sent" };
 
-        } catch (err) {
+        } catch {
           if (err.name === "UsernameExistsException") {
             return {
               statusCode: 409,
@@ -534,7 +472,7 @@ export const handler = async (event) => {
             ConfirmationCode: payload.code
           }));
           responseBody = { message: "Verification successful" };
-        } catch (err) {
+        } catch {
           return {
             statusCode: 400,
             headers,
@@ -550,7 +488,7 @@ export const handler = async (event) => {
             Username: email
           }));
           responseBody = { message: "Link reshared via email" };
-        } catch (err) {
+        } catch {
           if (err.name === "UserNotFoundException") {
             return {
               statusCode: 404,
@@ -576,57 +514,17 @@ export const handler = async (event) => {
 
       case "login":
         try {
-          const authAttempts = [
-            () => cognito.send(new InitiateAuthCommand({
-              ClientId: CLIENT_ID,
-              AuthFlow: "USER_PASSWORD_AUTH",
-              AuthParameters: {
-                USERNAME: email,
-                PASSWORD: payload.password
-              }
-            })),
-            () => cognito.send(new AdminInitiateAuthCommand({
-              UserPoolId: USER_POOL_ID,
-              ClientId: CLIENT_ID,
-              AuthFlow: "ADMIN_USER_PASSWORD_AUTH",
-              AuthParameters: {
-                USERNAME: email,
-                PASSWORD: payload.password
-              }
-            }))
-          ];
-
-          let authResponse;
-          let lastErr;
-          for (const attempt of authAttempts) {
-            try {
-              authResponse = await attempt();
-              lastErr = undefined;
-              break;
-            } catch (e) {
-              const msg = String(e?.message || "");
-              if (msg.includes("Auth flow not enabled for this client")) {
-                lastErr = e;
-                continue;
-              }
-              if (msg.includes("SECRET_HASH")) {
-                return {
-                  statusCode: 500,
-                  headers,
-                  body: JSON.stringify({ error: "Client secret is enabled; SECRET_HASH is required" })
-                };
-              }
-              throw e;
+          const authResponse = await cognito.send(new InitiateAuthCommand({
+            ClientId: CLIENT_ID,
+            AuthFlow: "USER_PASSWORD_AUTH",
+            AuthParameters: {
+              USERNAME: email,
+              PASSWORD: payload.password
             }
-          }
-
-          if (!authResponse) {
-            const msg = String(lastErr?.message || "Authentication failed");
-            return { statusCode: 500, headers, body: JSON.stringify({ error: msg }) };
-          }
+          }));
 
           const idToken = authResponse.AuthenticationResult.IdToken;
-          const decodedToken = parseJwtPayload(idToken);
+          const decodedToken = decodeCognitoTokenPayload(idToken);
           const groups = decodedToken['cognito:groups'] || [];
           let role = "User";
           if (groups.includes("Admins")) {
@@ -637,12 +535,14 @@ export const handler = async (event) => {
           try {
             await upsertUserActivity(email, { loginMethod: "DirectAPI" });
             await incrementMetric("loginSuccessTotal", 1);
-          } catch (dbErr) {
-          }
+          } catch {}
 
           responseBody = {
             message: "Login successful",
             token: idToken,
+            idToken,
+            accessToken: authResponse.AuthenticationResult.AccessToken,
+            refreshToken: authResponse.AuthenticationResult.RefreshToken,
             userName: userName,
             role: role,
             groups: groups
@@ -681,11 +581,11 @@ export const handler = async (event) => {
             Username: email
           }));
           responseBody = { message: "איפוס הסיסמה נשלח לאימייל" };
-        } catch (err) {
+        } catch {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ message: "שגיאה בשליחת איפוס סיסמה", detailed: err.message })
+            body: JSON.stringify({ message: "שגיאה בשליחת איפוס סיסמה" })
           };
         }
         break;
@@ -737,7 +637,7 @@ export const handler = async (event) => {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ message: "שגיאה באיפוס סיסמה", detailed: err.message })
+            body: JSON.stringify({ message: "שגיאה באיפוס סיסמה" })
           };
         }
         break;
@@ -765,10 +665,6 @@ export const handler = async (event) => {
     };
 
   } catch (err) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: err.message }),
-    };
+    return errorResponse(err, headers);
   }
 };

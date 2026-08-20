@@ -4,14 +4,15 @@ dns.setDefaultResultOrder("ipv4first");
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { randomUUID } from "node:crypto";
+import sanitizeHtml from "sanitize-html";
+import { errorResponse, getAuthenticatedIdentity, HttpError } from "./auth.mjs";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 
-const GOOGLE_API_KEYS = [
-  process.env.GOOGLE_API_KEY1,
-  process.env.GOOGLE_API_KEY2,
-  process.env.GOOGLE_API_KEY3
-].map(k => k?.trim()).filter(Boolean);
+const OPENROUTER_API_KEY = String(process.env.OPENROUTER_API_KEY || "").trim();
+const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -48,45 +49,133 @@ function countDayHeadings(planHtml) {
   return count;
 }
 
-function isLikelyRealPlanHtml(planHtml, expectedDays = 1) {
-  let s = String(planHtml || "").replace(/```(?:html)?/gi, '').replace(/```/g, '').trim();
-  if (!s) return false;
-  if (s.startsWith("{") && (s.includes('"reply"') || s.includes('"updatedPlanHtml"') || s.includes('"uiAction"'))) {
-    return false;
-  }
-  if (!s.includes("<") || !s.includes(">")) return false;
-  if (!/class\s*=\s*["']ai-plan-result["']/i.test(s) && !s.includes("<h3") && !s.includes("<h2")) return false;
-  const lower = s.toLowerCase();
-  if (lower.includes("לא הצלחתי לייצר תוכנית") || lower.includes("לא הצלחתי לטעון תוכנית") || lower.includes("בעיה בתקשורת") || lower.includes("נסה שוב")) {
-    return false;
-  }
-  const realDays = countDayHeadings(s);
-  if (realDays < expectedDays) {
-    return false;
+const PLAN_SANITIZE_OPTIONS = {
+  allowedTags: ["div", "h2", "h3", "h4", "p", "strong", "em", "ul", "ol", "li", "span", "br", "hr"],
+  allowedAttributes: {
+    div: ["class"], h2: ["class"], h3: ["class"], h4: ["class"],
+    p: ["class"], span: ["class"], ul: ["class"], ol: ["class"], li: ["class"],
+  },
+  allowedClasses: {
+    div: ["ai-plan-result", "plan-tips"],
+    "*": [],
+  },
+  disallowedTagsMode: "discard",
+  enforceHtmlBoundary: true,
+};
+
+function sanitizeAndValidatePlan(rawHtml, expectedDays) {
+  const requestedDays = Number(expectedDays);
+  if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 7) {
+    throw new HttpError(400, "Invalid expected plan day count");
   }
 
-  return true;
+  const withoutFences = String(rawHtml || "")
+    .replace(/^```(?:html)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const safeHtml = sanitizeHtml(withoutFences, PLAN_SANITIZE_OPTIONS).trim();
+  if (!safeHtml || safeHtml.length < 900) throw new HttpError(422, "DeepSeek returned an incomplete workout plan");
+  if (!/class=["']ai-plan-result["']/i.test(safeHtml)) throw new HttpError(422, "DeepSeek returned an invalid plan container");
+  if (!/class=["']plan-tips["']/i.test(safeHtml)) throw new HttpError(422, "DeepSeek omitted the required plan tips");
+
+  const headingRegex = /<h3[^>]*>([\s\S]*?)<\/h3>/gi;
+  const headings = [...safeHtml.matchAll(headingRegex)];
+  if (headings.length !== requestedDays) {
+    throw new HttpError(422, `DeepSeek returned ${headings.length} of ${requestedDays} required workout days`);
+  }
+
+  for (let index = 0; index < headings.length; index++) {
+    const start = (headings[index].index || 0) + headings[index][0].length;
+    const end = index + 1 < headings.length
+      ? headings[index + 1].index
+      : safeHtml.search(/<div[^>]+class=["']plan-tips["']/i);
+    const section = safeHtml.slice(start, end >= 0 ? end : undefined);
+    const exerciseCount = (section.match(/🏋️/gu) || []).length;
+    if (exerciseCount !== 3) {
+      throw new HttpError(422, `DeepSeek returned ${exerciseCount} exercises for workout day ${index + 1}; exactly 3 are required`);
+    }
+    for (const label of ["סטים", "חזרות", "מנוחה", "משקל מומלץ", "דגש טכניקה", "התקדמות עומס"]) {
+      const count = (section.match(new RegExp(`<strong[^>]*>\\s*${label}\\s*:?\\s*<\\/strong>`, "gi")) || []).length;
+      if (count !== 3) throw new HttpError(422, `DeepSeek omitted ${label} data in workout day ${index + 1}`);
+    }
+
+    const setValues = [...section.matchAll(/<strong[^>]*>\s*סטים\s*:?\s*<\/strong>\s*(\d+)/gi)]
+      .map((match) => Number(match[1]));
+    const repValues = [...section.matchAll(/<strong[^>]*>\s*חזרות\s*:?\s*<\/strong>\s*(\d+)(?:\s*-\s*(\d+))?/gi)]
+      .map((match) => [Number(match[1]), Number(match[2] || match[1])]);
+    const restValues = [...section.matchAll(/<strong[^>]*>\s*מנוחה\s*:?\s*<\/strong>\s*(\d+)\s*(שניות|דקות)?/gi)]
+      .map((match) => Number(match[1]) * (match[2] === "דקות" ? 60 : 1));
+    if (setValues.length !== 3 || setValues.some((value) => value < 1 || value > 10)) {
+      throw new HttpError(422, `DeepSeek returned invalid set counts for workout day ${index + 1}`);
+    }
+    if (repValues.length !== 3 || repValues.some(([minimum, maximum]) => minimum < 1 || maximum > 100 || minimum > maximum)) {
+      throw new HttpError(422, `DeepSeek returned invalid repetition ranges for workout day ${index + 1}`);
+    }
+    if (restValues.length !== 3 || restValues.some((value) => value < 10 || value > 600)) {
+      throw new HttpError(422, `DeepSeek returned invalid rest periods for workout day ${index + 1}`);
+    }
+
+    const weightParagraphs = [...section.matchAll(/<p[^>]*>\s*<strong[^>]*>\s*משקל מומלץ\s*:?\s*<\/strong>([\s\S]*?)<\/p>/gi)];
+    if (weightParagraphs.length !== 3) {
+      throw new HttpError(422, `DeepSeek returned invalid weight prescriptions for workout day ${index + 1}`);
+    }
+    for (const paragraph of weightParagraphs) {
+      const weights = [...paragraph[1].matchAll(/סט\s*[123]\s*:\s*(\d+(?:\.\d+)?)\s*ק["'״]?ג/gi)]
+        .map((match) => Number(match[1]));
+      if (weights.length !== 3 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) {
+        throw new HttpError(422, `DeepSeek returned missing or non-numeric weights for workout day ${index + 1}`);
+      }
+      if (!(weights[0] >= weights[1] && weights[1] >= weights[2])) {
+        throw new HttpError(422, `DeepSeek returned weights in the wrong order for workout day ${index + 1}`);
+      }
+    }
+  }
+
+  return safeHtml;
 }
 
 export const handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
   };
+  const isInternalGeneration = !event?.requestContext && event?.source === "fitmentor.plan-generation";
 
   try {
-    if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
-    if (!event.body) throw new Error("No body provided");
+    if (event?.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
 
-    const body = JSON.parse(event.body);
-    const { action, userId, payload } = body;
-
-    if (!action || !userId) {
-      return { statusCode: 400, headers, body: JSON.stringify({ message: "Missing fields" }) };
+    if (isInternalGeneration) {
+      const internalUserId = String(event.userId || "").toLowerCase().trim();
+      if (!internalUserId || event.action !== "bgGeneratePlan" || !event.requestId) {
+        throw new HttpError(400, "Invalid internal generation event");
+      }
+      try {
+        const result = await handleGeneratePlan(internalUserId, event.payload, event.requestId);
+        return { statusCode: 200, headers, body: JSON.stringify(result) };
+      } catch (generationError) {
+        await saveToDb(internalUserId, "PlanGeneration", {
+          status: "error",
+          requestId: event.requestId,
+          days: Number(event?.payload?.days),
+          message: generationError?.message || "DeepSeek plan generation failed",
+          updatedAt: new Date().toISOString(),
+        });
+        return {
+          statusCode: Number(generationError?.statusCode) || 500,
+          headers,
+          body: JSON.stringify({ message: "DeepSeek plan generation failed" }),
+        };
+      }
     }
 
-    const normalizedUserId = userId.toLowerCase().trim();
+    const identity = getAuthenticatedIdentity(event);
+    if (!event?.body) throw new HttpError(400, "No body provided");
+    const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+    const { action, payload = {} } = body || {};
+    if (!action) throw new HttpError(400, "Missing action");
+
+    const normalizedUserId = identity.userId;
     let result = {};
 
     switch (action) {
@@ -94,52 +183,55 @@ export const handler = async (event) => {
         result = await handleGetPlan(normalizedUserId);
         break;
       case "generatePlan":
-        try { await incrementMetric("aiCallsTotal", 1); } catch {}
+        validatePlanRequest(payload);
+        {
+          const requestId = randomUUID();
+          await saveToDb(normalizedUserId, "PlanGeneration", {
+            status: "processing",
+            requestId,
+            days: Number(payload.days),
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
         try {
-          // Immediately wipe old plan from DB so polling won't fetch stale plan from previous requests
-          await deleteFromDb(normalizedUserId, "Plan");
-
           const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || "il-central-1" });
           await lambdaClient.send(new InvokeCommand({
             FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME || "FitMentorDashboard",
             InvocationType: "Event",
             Payload: Buffer.from(JSON.stringify({
-              body: JSON.stringify({
-                action: "bgGeneratePlan",
-                userId: normalizedUserId,
-                payload
-              })
+              source: "fitmentor.plan-generation",
+              action: "bgGeneratePlan",
+              requestId,
+              userId: normalizedUserId,
+              payload,
             }))
           }));
-          result = { status: "processing", message: "ה-AI במודל DeepSeek בונה עבורך תוכנית אימונים מפורטת. העמוד יתעדכן אוטומטית." };
-        } catch (invErr) {
-          console.warn("Async self-invocation failed, running synchronously...", invErr);
-          result = await handleGeneratePlan(normalizedUserId, payload);
+          result = { status: "processing", requestId };
+        } catch {
+          await saveToDb(normalizedUserId, "PlanGeneration", {
+            status: "error", requestId, message: "Unable to start DeepSeek plan generation", updatedAt: new Date().toISOString(),
+          });
+          throw new HttpError(503, "Unable to start DeepSeek plan generation");
         }
-        break;
-
-      case "bgGeneratePlan":
-        console.log(`[BG_GENERATE_PLAN_START] userId=${normalizedUserId}`);
-        result = await handleGeneratePlan(normalizedUserId, payload);
+        }
         break;
       case "savePlan":
-        if (!payload?.planHtml || !isLikelyRealPlanHtml(payload.planHtml)) {
-          return { statusCode: 400, headers, body: JSON.stringify({ message: "Invalid planHtml (not saving)" }) };
+        {
+        const safeParams = validatePlanRequest(payload?.params);
+        const safePlanHtml = sanitizeAndValidatePlan(payload?.planHtml, safeParams.days);
+        await saveToDb(normalizedUserId, "Plan", { planHtml: safePlanHtml, params: safeParams, updatedAt: new Date().toISOString() });
+        await appendPlanHistorySnapshot(normalizedUserId, safePlanHtml, safeParams);
+        result = { message: "Saved", plan: { planHtml: safePlanHtml, params: safeParams } };
         }
-
-        await saveToDb(normalizedUserId, "Plan", { ...payload, updatedAt: new Date().toISOString() });
-        await appendPlanHistorySnapshot(normalizedUserId, payload.planHtml, payload.params || null);
-        result = { message: "Saved" };
         break;
       case "deletePlan":
         await deleteFromDb(normalizedUserId, "Plan");
-        await deleteFromDb(normalizedUserId, "ChatHistory");
-        result = { message: "Plan & Chat deleted" };
+        await deleteFromDb(normalizedUserId, "PlanGeneration");
+        result = { message: "Plan deleted" };
         break;
 
       case "chat":
-        try { await incrementMetric("aiCallsTotal", 1); } catch {}
-        result = await handleChat(normalizedUserId, payload);
+        result = await handleChat(normalizedUserId, { ...payload, userName: identity.name });
         break;
       case "getChatHistory":
         result = await handleGetChatHistory(normalizedUserId);
@@ -152,10 +244,9 @@ export const handler = async (event) => {
         result = await handleGetTrainingLogs(normalizedUserId);
         break;
 
-	  case "getAiInsights":
-    try { await incrementMetric("aiCallsTotal", 1); } catch {}
-		result = await handleGetAiInsights(normalizedUserId, payload);
-		break;
+      case "getAiInsights":
+        result = await handleGetAiInsights(normalizedUserId, payload);
+        break;
 
       default:
         return { statusCode: 400, headers, body: JSON.stringify({ message: `Invalid action: ${action}` }) };
@@ -164,13 +255,26 @@ export const handler = async (event) => {
     return { statusCode: 200, headers, body: JSON.stringify(result) };
 
   } catch (error) {
-    return { statusCode: 500, headers, body: JSON.stringify({ message: error.message || "Internal Server Error" }) };
+    if (isInternalGeneration) throw error;
+    return errorResponse(error, headers);
   }
 };
 
 async function handleGetPlan(userId) {
-  const data = await getFromDb(userId, "Plan");
-  return data ? { plan: { planHtml: data.planHtml, params: data.params } } : {};
+  const [data, generation] = await Promise.all([
+    getFromDb(userId, "Plan"),
+    getFromDb(userId, "PlanGeneration"),
+  ]);
+  return {
+    plan: data ? { planHtml: data.planHtml, params: data.params, updatedAt: data.updatedAt || data.createdAt } : null,
+    generation: generation ? {
+      status: generation.status,
+      requestId: generation.requestId,
+      message: generation.status === "error" ? generation.message : undefined,
+      days: generation.days,
+      updatedAt: generation.updatedAt,
+    } : null,
+  };
 }
 
 async function handleGetChatHistory(userId) {
@@ -182,74 +286,128 @@ async function handleGetChatHistory(userId) {
 }
 
 async function handleSaveChatHistory(userId, payload) {
-  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
-  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  const requestedSessions = normalizeChatSessions(payload?.sessions);
+  const currentData = await getFromDb(userId, "ChatHistory");
+  const currentSessions = normalizeChatSessions(currentData?.sessions);
+  const currentById = new Map(currentSessions.map((session) => [session.id, session]));
+  const sessions = requestedSessions.map((requested) => {
+    const current = currentById.get(requested.id);
+    if (!current) {
+      return { ...requested, title: "שיחה חדשה", messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    }
+    return {
+      ...current,
+      messages: current.messages,
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+    };
+  });
   await saveToDb(userId, "ChatHistory", {
     sessions,
-    messages,
     updatedAt: new Date().toISOString()
   });
 }
 
+function normalizeChatText(value, maxLength = 4000) {
+  return [...String(value || "")]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+    })
+    .join("")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function normalizeChatSessions(input) {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 20).map((session) => {
+    const id = normalizeChatText(session?.id, 100) || randomUUID();
+    const title = normalizeChatText(session?.title, 80) || "שיחה חדשה";
+    const messages = Array.isArray(session?.messages)
+      ? session.messages.slice(-100).map((message) => ({
+          role: message?.role === "user" ? "user" : "ai",
+          text: normalizeChatText(message?.text, 5000),
+          timestamp: Number.isFinite(Number(message?.timestamp)) ? Number(message.timestamp) : Date.now(),
+        })).filter((message) => message.text)
+      : [];
+    return {
+      id,
+      title,
+      createdAt: Number.isFinite(Number(session?.createdAt)) ? Number(session.createdAt) : Date.now(),
+      updatedAt: Number.isFinite(Number(session?.updatedAt)) ? Number(session.updatedAt) : Date.now(),
+      messages,
+    };
+  });
+}
+
 async function handleGetTrainingLogs(userId) {
-  const rawId = String(userId || "").trim();
-  const lowerId = rawId.toLowerCase();
-  const idsToTry = Array.from(new Set([lowerId, rawId])).filter(Boolean);
   const allLogsMap = new Map();
 
-  for (const targetId of idsToTry) {
-    const params = {
+  let lastKey;
+  do {
+    const result = await docClient.send(new QueryCommand({
       TableName: TABLE_NAME,
       KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :TrainingLogPrefix)",
       ExpressionAttributeValues: {
-        ":userId": targetId,
+        ":userId": userId,
         ":TrainingLogPrefix": "TrainingLog_"
+      },
+      ExclusiveStartKey: lastKey,
+    }));
+    for (const item of result.Items || []) {
+      const { UserID: _userId, DataType, UpdatedAt: _updatedAt, Data, ...rest } = item || {};
+      const data = Data ?? rest;
+      const date = String(DataType || "").replace("TrainingLog_", "");
+      if (date && !allLogsMap.has(date)) {
+        allLogsMap.set(date, { date, data });
       }
-    };
-
-    try {
-      const result = await docClient.send(new QueryCommand(params));
-      const items = result.Items || [];
-      for (const item of items) {
-        const { UserID: _UserID, DataType, UpdatedAt: _UpdatedAt, Data, ...rest } = item || {};
-        const data = Data ?? rest;
-        const date = String(DataType || "").replace("TrainingLog_", "");
-        if (date && !allLogsMap.has(date)) {
-          allLogsMap.set(date, { date, data });
-        }
-      }
-    } catch (error) {
-      console.warn("Query training logs error:", error);
     }
-  }
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
 
   const logs = Array.from(allLogsMap.values());
   logs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
   return { logs, error: null };
 }
 
-function sanitizeAndRepairPlan(rawHtml, reqDays) {
-  let html = String(rawHtml || '').trim();
+function validatePlanRequest(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Missing plan parameters");
+  const age = Number(payload.age);
+  const weight = Number(payload.weight);
+  const height = Number(payload.height);
+  const days = Number(payload.days);
+  const goal = String(payload.goal || "").trim();
+  const gender = String(payload.gender || "").trim();
+  const fitnessLevel = String(payload.fitnessLevel || "").trim();
+  const equipment = String(payload.equipment || "").trim();
 
-  html = html.replace(/<[^>]*$/g, '').trim();
-
-  if (!html.includes('ai-plan-result')) {
-    html = `<div class="ai-plan-result">\n${html}\n</div>`;
+  if (!Number.isInteger(age) || age < 13 || age > 100) throw new HttpError(400, "Age must be between 13 and 100");
+  if (!Number.isFinite(weight) || weight < 30 || weight > 400) throw new HttpError(400, "Weight must be between 30 and 400 kg");
+  if (!Number.isFinite(height) || height < 120 || height > 230) throw new HttpError(400, "Height must be between 120 and 230 cm");
+  if (!Number.isInteger(days) || days < 2 || days > 6) throw new HttpError(400, "Training days must be between 2 and 6");
+  if (!["חיטוב וירידה במשקל", "עלייה במסת שריר", "שיפור כושר כללי", "אימוני כוח"].includes(goal)) {
+    throw new HttpError(400, "Invalid training goal");
   }
+  if (!["male", "female", "other"].includes(gender)) throw new HttpError(400, "Invalid gender");
+  if (!["beginner", "intermediate", "advanced"].includes(fitnessLevel)) throw new HttpError(400, "Invalid fitness level");
+  if (!["gym", "dumbbells", "bodyweight", "minimal"].includes(equipment)) throw new HttpError(400, "Invalid equipment selection");
 
-  return html;
+  return { age, weight, height, days, goal, gender, fitnessLevel, equipment };
 }
 
-async function handleGeneratePlan(userId, payload) {
-  const { age = 25, gender = 'male', weight = 70, height = 175, fitnessLevel = 'beginner', goal = 'חיטוב וירידה במשקל', equipment = 'gym', days = 3 } = payload || {};
-  const reqDays = Math.max(1, Math.min(7, parseInt(days) || 3));
+async function handleGeneratePlan(userId, payload, requestId) {
+  const safeParams = validatePlanRequest(payload);
+  const { age, gender, weight, height, fitnessLevel, goal, equipment, days } = safeParams;
+  const reqDays = days;
 
   const fitnessDesc = { 'beginner': 'מתחיל (0-6 חודשים)', 'intermediate': 'בינוני (6-24 חודשים)', 'advanced': 'מתקדם (2+ שנים)' }[fitnessLevel] || fitnessLevel;
   const equipmentDesc = { 'gym': 'חדר כושר מלא', 'dumbbells': 'משקולות בלבד', 'bodyweight': 'משקל גוף בלבד', 'minimal': 'ציוד ביתי מינימלי' }[equipment] || equipment;
 
   const prompt = `אתה מודל ה-AI של DeepSeek ומומחה עולמי למדעי הספורט ואימון כושר אישי.
-עליך לבנות תוכנית אימונים מקצועית ומלאה של בדיוק ${reqDays} ימים נפרדים לחדר כושר עבור המתאמן:
+עליך לבנות תוכנית אימונים מקצועית ומלאה של בדיוק ${reqDays} ימים נפרדים, המותאמת אך ורק לציוד הזמין של המתאמן:
 • גיל: ${age}
+• מגדר: ${gender}
 • משקל: ${weight} ק"ג
 • גובה: ${height} ס"מ
 • רמת כושר: ${fitnessDesc}
@@ -270,6 +428,7 @@ async function handleGeneratePlan(userId, payload) {
 ⚠️ כללי ברזל:
 • חובה לכלול בכל תרגיל את פסקה 4 "דגש טכניקה:" - חל איסור מוחלט להשמיט דגש טכניקה מאף תרגיל!
 • משקלים מספריים ריאליסטיים בלבד בק"ג לכל סט (סט 1 >= סט 2 >= סט 3 עקב ניהול עייפות).
+• בתרגילי משקל גוף או ציוד מינימלי, חשב והצג התנגדות אפקטיבית מספרית בק"ג לפי משקל המתאמן והווריאציה; אין להחזיר מילים כמו "משקל גוף" במקום שלושת המספרים.
 • בסיום כל התוכנית: <div class="plan-tips"><p>טיפ תזונה...</p><p>טיפ התאוששות...</p><p>טיפ שינה...</p></div>
 • עטוף הכל ב-<div class="ai-plan-result">...</div>
 • החזר קוד HTML נקי בלבד ללא שום טקסט מיותר מסביב.`;
@@ -277,6 +436,7 @@ async function handleGeneratePlan(userId, payload) {
   console.log(`[GENERATE_PLAN_START] reqDays=${reqDays}, userId=${userId}`);
   const MAX_ATTEMPTS = 2;
   let planHtml = null;
+  let lastError = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const t0 = Date.now();
@@ -287,59 +447,41 @@ async function handleGeneratePlan(userId, payload) {
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
 
-      if (htmlLen > 1200 && dayCount >= reqDays) {
-        console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}`);
-        planHtml = candidateHtml;
-        break;
-      }
-
-      if (htmlLen > 800) {
-        planHtml = candidateHtml;
-        break;
-      }
+      planHtml = sanitizeAndValidatePlan(candidateHtml, reqDays);
+      console.log(`[PLAN_VALIDATION_SUCCESS] attempt=${attempt}, reqDays=${reqDays}, dayHeadings=${dayCount}/${reqDays}`);
+      break;
     } catch (attemptErr) {
+      lastError = attemptErr;
       console.error(`[GENERATE_PLAN_ATTEMPT_ERR] attempt=${attempt}, took ${Date.now() - t0}ms:`, attemptErr.message || attemptErr);
     }
   }
 
-  if (planHtml && countDayHeadings(planHtml) < reqDays) {
-    const currentDays = countDayHeadings(planHtml);
-    console.warn(`[PLAN_EXTENSION_API_CALL] API generated ${currentDays}/${reqDays} days. Requesting API completion for remaining days...`);
-    const missingPrompt = `תוכנית האימונים שנבנתה עד כה מה-API כוללת ${currentDays} ימים out of ${reqDays}.\nבנה מה-API בלבד את הימים החסרים (יום ${currentDays + 1} עד יום ${reqDays}).\nלכל יום כותרת <h3>יום X: ...</h3> ו-3 תרגילים עם 5 פסקאות <p> כנדרש בפורמט HTML. החזר רק את ימים ${currentDays + 1} עד ${reqDays}!`;
-    try {
-      const extraDaysHtml = await tryGenerateContent(missingPrompt, false);
-      if (extraDaysHtml && extraDaysHtml.length > 300) {
-        const tipsIdx = planHtml.indexOf('<div class="plan-tips"');
-        if (tipsIdx !== -1) {
-          planHtml = planHtml.slice(0, tipsIdx) + '\n' + extraDaysHtml + '\n' + planHtml.slice(tipsIdx);
-        } else {
-          planHtml += '\n' + extraDaysHtml;
-        }
-      }
-    } catch (e) {
-      console.error('[PLAN_EXTENSION_ERR]', e.message);
-    }
-  }
+  if (!planHtml) throw new HttpError(502, lastError?.message || "DeepSeek did not return a complete valid workout plan");
 
-  planHtml = sanitizeAndRepairPlan(planHtml, reqDays);
-
-  await deleteFromDb(userId, "ChatHistory");
-
-  await saveToDb(userId, "Plan", { planHtml, params: payload, createdAt: new Date().toISOString() });
-  await appendPlanHistorySnapshot(userId, planHtml, payload);
-  return { plan: { planHtml } };
+  await saveToDb(userId, "Plan", { planHtml, params: safeParams, createdAt: new Date().toISOString() });
+  await appendPlanHistorySnapshot(userId, planHtml, safeParams);
+  await saveToDb(userId, "PlanGeneration", {
+    status: "complete", requestId, days: reqDays, updatedAt: new Date().toISOString(),
+  });
+  return { plan: { planHtml, params: safeParams }, generation: { status: "complete", requestId } };
 }
 
 function normalizeUserDisplayName(name) {
   const s = String(name || "").trim();
   if (!s) return "";
-  const cleaned = s.replace(/[\u0000-\u001F\u007F]/g, "").trim();
+  const cleaned = [...s].filter((character) => {
+    const code = character.charCodeAt(0);
+    return code > 31 && code !== 127;
+  }).join("").trim();
   if (!cleaned) return "";
   return cleaned.slice(0, 40);
 }
 
 async function handleChat(userId, payload) {
-  const { message, userName, sessions: inputSessions, activeSessionId: inputActiveSessionId } = payload || {};
+  const message = normalizeChatText(payload?.message, 2000);
+  const userName = payload?.userName;
+  const requestedSessionId = normalizeChatText(payload?.activeSessionId, 100);
+  if (!message) throw new HttpError(400, "Chat message is required");
   const planData = await getFromDb(userId, "Plan");
   const chatData = await getFromDb(userId, "ChatHistory");
 
@@ -358,8 +500,20 @@ async function handleChat(userId, payload) {
   const planParams = planData?.params || {};
   const planParamsContext = Object.keys(planParams).length > 0 ? JSON.stringify(planParams) : 'לא סופקו פרטים נוספים';
 
-  let messages = chatData?.messages || [];
-  const rawPlanHtml = planData?.planHtml || "אין תוכנית כרגע.";
+  const storedSessions = normalizeChatSessions(chatData?.sessions);
+  let activeSession = storedSessions.find((session) => session.id === requestedSessionId);
+  if (!activeSession) {
+    activeSession = {
+      id: requestedSessionId || randomUUID(),
+      title: "שיחה חדשה",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    storedSessions.unshift(activeSession);
+  }
+  const messages = activeSession.messages;
+  const rawPlanHtml = planData?.planHtml || "אין תוכנית שמורה כרגע.";
   const currentPlanSummary = rawPlanHtml.length > 2500
     ? rawPlanHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 2000)
     : rawPlanHtml;
@@ -403,7 +557,7 @@ async function handleChat(userId, payload) {
   const systemPrompt = `
 אתה FitMentor AI, מאמן כושר אישי מקצועי, חכם, קשוב ומעצים המכיר את כל נתוני המשתמש מתוך ה-Database (DynamoDB) של FitMentor.
 
-שם המשתמש: ${displayName || "אור"}
+שם המשתמש: ${displayName || userId}
 פרטי המתאמן (גיל, משקל, גובה, מטרה, ציוד): ${planParamsContext}
 
 ══════════════════════════════════════
@@ -454,7 +608,7 @@ ${historyContext ? `4. 📜 היסטוריית תוכניות עבר:\n${history
 }
 `;
 
-  const recentHistory = messages.slice(-4).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
+  const recentHistory = messages.slice(-8).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
   const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
 
   const rawResponse = await tryGenerateContent(fullPrompt, true);
@@ -463,54 +617,40 @@ ${historyContext ? `4. 📜 היסטוריית תוכניות עבר:\n${history
   const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
   const aiMsgObj = { role: "ai", text: parsedResponse.reply, timestamp: Date.now() };
 
-  let updatedSessions = Array.isArray(inputSessions) ? [...inputSessions] : null;
-  if (updatedSessions && updatedSessions.length > 0) {
-    const activeId = inputActiveSessionId || updatedSessions[0].id;
-    const activeIdx = updatedSessions.findIndex(s => s.id === activeId);
-    const targetIdx = activeIdx >= 0 ? activeIdx : 0;
-    const targetSession = updatedSessions[targetIdx];
-
-    let sessionTitle = targetSession.title;
-    if (!sessionTitle || sessionTitle === 'שיחה חדשה' || !targetSession.messages || targetSession.messages.length === 0) {
-      sessionTitle = message.slice(0, 28) + (message.length > 28 ? '...' : '');
-    }
-
-    const updatedMessages = [...(targetSession.messages || []), userMsgObj, aiMsgObj];
-    updatedSessions[targetIdx] = {
-      ...targetSession,
-      title: sessionTitle,
-      updatedAt: Date.now(),
-      messages: updatedMessages
-    };
-
-    await saveToDb(userId, "ChatHistory", {
-      sessions: updatedSessions,
-      messages: updatedMessages,
-      updatedAt: new Date().toISOString()
-    });
-  } else {
-    messages.push(userMsgObj);
-    messages.push(aiMsgObj);
-    await saveToDb(userId, "ChatHistory", {
-      messages,
-      updatedAt: new Date().toISOString()
-    });
-  }
-
-  if (parsedResponse.updatedPlanHtml) {
+  let safeUpdatedPlanHtml = null;
+  if (parsedResponse.updatedPlanHtml != null) {
+    if (!planData?.params?.days) throw new HttpError(422, "A saved plan is required before the chat can modify it");
+    safeUpdatedPlanHtml = sanitizeAndValidatePlan(parsedResponse.updatedPlanHtml, Number(planData.params.days));
     await saveToDb(userId, "Plan", {
-      planHtml: parsedResponse.updatedPlanHtml,
+      planHtml: safeUpdatedPlanHtml,
       params: planData?.params || {},
       updatedAt: new Date().toISOString()
     });
 
-    await appendPlanHistorySnapshot(userId, parsedResponse.updatedPlanHtml, planData?.params || null);
+    await appendPlanHistorySnapshot(userId, safeUpdatedPlanHtml, planData?.params || null);
   }
+
+  activeSession.title = activeSession.title === "שיחה חדשה"
+    ? message.slice(0, 28) + (message.length > 28 ? "..." : "")
+    : activeSession.title;
+  activeSession.updatedAt = Date.now();
+  activeSession.messages = [...messages, userMsgObj, aiMsgObj].slice(-100);
+  const updatedSessions = storedSessions
+    .map((session) => session.id === activeSession.id ? activeSession : session)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 20);
+
+  await saveToDb(userId, "ChatHistory", {
+    sessions: updatedSessions,
+    updatedAt: new Date().toISOString(),
+  });
 
   return {
     reply: parsedResponse.reply,
-    updatedPlanHtml: parsedResponse.updatedPlanHtml,
-    uiAction: parsedResponse.uiAction || null
+    updatedPlanHtml: safeUpdatedPlanHtml,
+    uiAction: parsedResponse.uiAction || null,
+    activeSessionId: activeSession.id,
+    sessions: updatedSessions,
   };
 }
 
@@ -585,70 +725,27 @@ function computeProgressSignals(trainingLogs) {
 }
 
 function extractChatReply(raw) {
-  if (!raw) return { reply: "שלום! איך אוכל לעזור לך היום?", updatedPlanHtml: null, uiAction: null };
-  let text = String(raw).trim();
+  const text = String(raw || "").trim();
+  if (!text) throw new HttpError(502, "DeepSeek returned an empty chat response");
 
-  // Strip markdown code fences if wrapped in ```json ... ```
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-
-  // 1. Try direct JSON.parse
+  let parsed;
   try {
-    const obj = JSON.parse(text);
-    if (obj && typeof obj.reply === 'string' && obj.reply.trim()) {
-      return {
-        reply: obj.reply.trim(),
-        updatedPlanHtml: obj.updatedPlanHtml || null,
-        uiAction: obj.uiAction || null
-      };
-    }
-  } catch (e) {}
-
-  // 2. Match "reply": " ... " up to updatedPlanHtml / uiAction / end of object
-  const replyBlockMatch = text.match(/"reply"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:updatedPlanHtml|uiAction)"/);
-  if (replyBlockMatch && replyBlockMatch[1]) {
-    return {
-      reply: replyBlockMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'),
-      updatedPlanHtml: null,
-      uiAction: null
-    };
+    parsed = JSON.parse(text);
+  } catch {
+    throw new HttpError(502, "DeepSeek returned invalid chat JSON");
   }
 
-  const lastReplyMatch = text.match(/"reply"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
-  if (lastReplyMatch && lastReplyMatch[1]) {
-    return {
-      reply: lastReplyMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'),
-      updatedPlanHtml: null,
-      uiAction: null
-    };
-  }
+  const reply = normalizeChatText(parsed?.reply, 5000);
+  if (!reply) throw new HttpError(502, "DeepSeek returned a chat response without a reply");
 
-  // 3. If text contains "reply", strip JSON wrappers
-  if (text.includes('"reply"')) {
-    let stripped = text.replace(/^\s*\{?\s*"reply"\s*:\s*"/, '');
-    stripped = stripped.replace(/"\s*,\s*"(?:updatedPlanHtml|uiAction)"[\s\S]*$/, '');
-    stripped = stripped.replace(/"\s*\}?\s*$/, '');
-    if (stripped.trim()) {
-      return {
-        reply: stripped.replace(/\\n/g, "\n").replace(/\\"/g, '"').trim(),
-        updatedPlanHtml: null,
-        uiAction: null
-      };
-    }
-  }
+  const updatedPlanHtml = parsed.updatedPlanHtml == null ? null : String(parsed.updatedPlanHtml);
+  const uiAction = parsed.uiAction == null ? null : String(parsed.uiAction);
+  if (uiAction && uiAction !== "openNewPlanForm") throw new HttpError(502, "DeepSeek returned an unsupported UI action");
 
-  // 4. If plain text without JSON
-  return {
-    reply: text.replace(/^\{?\s*"reply"\s*:\s*"?/, '').replace(/"?\s*\}?$/, '').trim() || "הבנתי אותך. איך אוכל לעזור לך עוד היום?",
-    updatedPlanHtml: null,
-    uiAction: null
-  };
+  return { reply, updatedPlanHtml, uiAction };
 }
 
-const FAST_AI_MODELS = [
-  "deepseek/deepseek-v4-flash-0731"
-];
-const API_TIMEOUT_MS = 25000;
-const MAX_OUTPUT_TOKENS = 4500;
+const MAX_OUTPUT_TOKENS = 8000;
 
 async function fetchWithHardTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -676,32 +773,10 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
 }
 
 async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null, maxTokensOverride = null) {
-  const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
-  const openRouterKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "").trim();
-  const apiKey = openRouterKey || deepseekKey;
+  if (!OPENROUTER_API_KEY) throw new HttpError(503, "DeepSeek is not configured");
 
-  if (!apiKey) {
-    console.error("Missing API key for AI execution.");
-    if (isChatCall) {
-      return JSON.stringify({
-        reply: "מפתח ה-API חסר במערכת. אנא הגדר את המפתח ב-AWS Lambda.",
-        updatedPlanHtml: null,
-        uiAction: null,
-      });
-    }
-    return `
-<div class="ai-plan-result">
-  <h3>שגיאה בתקשורת עם AI</h3>
-  <p>מפתח ה-API חסר במערכת. אנא הגדר אותו ב-AWS Lambda.</p>
-</div>
-`.trim();
-  }
-
-  const timeoutMs = isChatCall ? 18000 : (systemPromptOverride ? 12000 : 30000);
+  const timeoutMs = isChatCall ? 30000 : (systemPromptOverride ? 25000 : 50000);
   const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 2500 : MAX_OUTPUT_TOKENS);
-  const model = "deepseek/deepseek-v4-flash-0731";
-  let lastErr = null;
-
   let systemPrompt = "You are DeepSeek, an elite master strength and conditioning sports scientist. Your exercise selections, per-set descending weights, and rich biomechanical technique instructions must be 100% complete and accurate. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגש טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, clean HTML for the workout plan.";
 
   if (systemPromptOverride) {
@@ -710,13 +785,13 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
     systemPrompt = "You are FitMentor AI powered by DeepSeek, an expert, friendly AI fitness coach. Reply ONLY with a single valid JSON object: {\"reply\": \"Your Hebrew reply here\", \"updatedPlanHtml\": null, \"uiAction\": null}. Do not include markdown codeblocks or text outside JSON.";
   }
 
-  const endpoint = "https://openrouter.ai/api/v1/chat/completions";
   const t0 = Date.now();
 
   try {
-    console.log(`[DEEPSEEK_CALL_START] endpoint=${endpoint}, model=${model}, isChatCall=${isChatCall}`);
+    console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, isChatCall=${isChatCall}`);
+    try { await incrementMetric("aiCallsTotal", 1); } catch {}
     const requestPayload = {
-      model,
+      model: DEEPSEEK_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: promptText }
@@ -725,11 +800,11 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
       temperature: systemPromptOverride ? 0.2 : 0.4
     };
 
-    const response = await fetchWithHardTimeout(endpoint, {
+    const response = await fetchWithHardTimeout(OPENROUTER_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
         "HTTP-Referer": "https://fitmentor.app",
         "X-Title": "FitMentor"
       },
@@ -738,39 +813,24 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      console.warn(`[DEEPSEEK_HTTP_ERR] model=${model}, status=${response.status}: ${errText.slice(0, 150)}`);
-      throw new Error(`AI API returned HTTP ${response.status} for ${model}`);
+      console.warn(`[DEEPSEEK_HTTP_ERR] model=${DEEPSEEK_MODEL}, status=${response.status}: ${errText.slice(0, 150)}`);
+      throw new HttpError(502, `DeepSeek returned HTTP ${response.status}`);
     }
 
     const data = await response.json();
-    const msg = data.choices?.[0]?.message;
-    const text = (typeof msg?.content === "string" && msg.content.trim().length > 0)
-      ? msg.content
-      : (typeof msg?.reasoning === "string" && msg.reasoning.trim().length > 0
-        ? msg.reasoning
-        : (typeof data.choices?.[0]?.text === "string" ? data.choices[0].text : ""));
+    const text = data.choices?.[0]?.message?.content;
 
     if (typeof text === "string" && text.trim().length > 0) {
-      console.log(`[DEEPSEEK_SUCCESS] model=${model}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
+      console.log(`[DEEPSEEK_SUCCESS] model=${DEEPSEEK_MODEL}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
       return text;
     }
 
-    throw new Error(`Empty response returned from model ${model}`);
+    throw new HttpError(502, "DeepSeek returned an empty response");
   } catch (err) {
-    lastErr = err;
-    console.warn(`[DEEPSEEK_CALL_FAILED] model=${model}, took ${Date.now() - t0}ms:`, err.message || err);
+    console.warn(`[DEEPSEEK_CALL_FAILED] model=${DEEPSEEK_MODEL}, took ${Date.now() - t0}ms:`, err.message || err);
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(502, "DeepSeek request failed");
   }
-
-  // Handle final failure - strictly no fallback to any other model!
-  if (!isChatCall) {
-    throw new Error(lastErr?.message || "ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר");
-  }
-
-  return JSON.stringify({
-    reply: `שגיאה בתקשורת עם ה-AI: ${lastErr?.message || "אנא נסה שוב מאוחר יותר."}`,
-    updatedPlanHtml: null,
-    uiAction: null
-  });
 }
 
 async function saveToDb(userId, dataType, data) {
@@ -788,67 +848,45 @@ async function deleteFromDb(userId, dataType) {
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { UserID: userId, DataType: dataType } }));
 }
 
-function filterLogsLastDays(logs, days = 30) {
-  const maxDays = Math.max(1, Math.floor(Number(days) || 30));
-  const today = new Date();
-  const cutoff = new Date(today);
-  cutoff.setDate(today.getDate() - maxDays);
-  const cutoffYmd = cutoff.toISOString().slice(0, 10);
-
-  return (logs || []).filter((log) => {
-    const d = String(log?.date || "");
-    return d && d >= cutoffYmd;
-  });
-}
-
 function safeParseJson(raw) {
-  if (!raw) return null;
-  let cleaned = String(raw).replace(/```json/gi, "").replace(/```/g, "").trim();
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-  }
+  if (!raw) throw new HttpError(502, "DeepSeek returned an empty JSON response");
   try {
-    return JSON.parse(cleaned);
+    return JSON.parse(String(raw).trim());
   } catch {
-    return null;
+    throw new HttpError(502, "DeepSeek returned invalid JSON");
   }
 }
 
 function normalizeRecommendations(obj) {
-  const recs = obj?.recommendations || obj?.recs || obj?.insights || obj?.items || [];
-  if (!Array.isArray(recs)) return [];
-  return recs
+  const recs = obj?.recommendations;
+  if (!Array.isArray(recs) || recs.length < 2 || recs.length > 4) {
+    throw new HttpError(502, "DeepSeek returned an invalid recommendation count");
+  }
+  const normalized = recs
     .map((r) => {
-      const type = String(r?.type || "tip").toLowerCase();
-      const title = String(r?.title || "תובנה").trim();
-      const text = String(r?.text || r?.message || "").trim();
+      const type = String(r?.type || "").toLowerCase();
+      const title = normalizeChatText(r?.title, 120);
+      const text = normalizeChatText(r?.text, 700);
       return { type, title, text };
     })
-    .filter((r) => r.text && String(r.text).trim().length > 0)
-    .slice(0, 4);
+    .filter((r) => ["tip", "warning", "neglect", "stall", "progression"].includes(r.type) && r.title && r.text);
+  if (normalized.length !== recs.length) throw new HttpError(502, "DeepSeek returned malformed recommendations");
+  return normalized;
 }
 
-async function handleGetAiInsights(userId, payload = {}) {
+async function handleGetAiInsights(userId) {
   const trainingLogsResult = await handleGetTrainingLogs(userId);
-  let trainingLogs = trainingLogsResult.logs || [];
-
-  if (Array.isArray(payload?.logs) && payload.logs.length > 0) {
-    const existingDates = new Set(trainingLogs.map((l) => l.date));
-    payload.logs.forEach((l) => {
-      if (l && l.date && !existingDates.has(l.date)) {
-        trainingLogs.push({ date: l.date, data: { exercises: l.exercises || [] } });
-      }
-    });
-  }
+  const trainingLogs = trainingLogsResult.logs || [];
 
   // Sort logs by date descending (most recent workouts first)
   trainingLogs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   // ALWAYS select the last 5-10 most recent workouts, regardless of how long ago they were logged!
   const recentLogs = trainingLogs.slice(0, 10);
-  const todayYmd = new Date().toISOString().slice(0, 10);
+  if (recentLogs.length === 0) return { recommendations: [], meta: { workoutsConsidered: 0 } };
+  const todayYmd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
 
   let trainingLogsContext = "";
   if (recentLogs.length > 0) {
@@ -906,7 +944,6 @@ ${trainingLogsContext}
 
   return {
     recommendations,
-    rawOutput: raw,
     meta: { workoutsConsidered: recentLogs.length },
   };
 }
@@ -956,12 +993,8 @@ async function getPlanHistory(userId, limit = MAX_PLAN_HISTORY_TO_FETCH) {
     Limit: limit
   };
 
-  try {
-    const result = await docClient.send(new QueryCommand(params));
-    return result?.Items || [];
-  } catch (e) {
-    return [];
-  }
+  const result = await docClient.send(new QueryCommand(params));
+  return result?.Items || [];
 }
 
 async function appendPlanHistorySnapshot(userId, planHtml, params) {
@@ -970,3 +1003,12 @@ async function appendPlanHistorySnapshot(userId, planHtml, params) {
   const summary = summarizePlanForPrompt(planHtml);
   await saveToDb(userId, dataType, { planHtml, params, summary, createdAt });
 }
+
+export const __testOnly = {
+  deepSeekModel: DEEPSEEK_MODEL,
+  openRouterEndpoint: OPENROUTER_ENDPOINT,
+  extractChatReply,
+  normalizeRecommendations,
+  sanitizeAndValidatePlan,
+  validatePlanRequest,
+};

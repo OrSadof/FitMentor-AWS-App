@@ -29,6 +29,7 @@ IAM User Info.txt
 
 # Lambda deployment bundles
 *.zip
+**/packaged.yaml
 
 # Test response files
 response.json

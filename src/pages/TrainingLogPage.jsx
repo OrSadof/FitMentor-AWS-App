@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { fitmentorApi } from '../api/fitmentorApi';
 
 /* ─── Vector SVG Icons ─── */
@@ -103,10 +103,17 @@ const PREDEFINED_EXERCISES = [
   "פלאנק (Plank)"
 ];
 
+function formatLocalYmd(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function TrainingLogPage({ user, onNavigate }) {
-  const effectiveEmail = user?.email || localStorage.getItem('fitmentor_userId') || '';
-  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [bodyWeightKg, setBodyWeightKg] = useState(75);
+  const effectiveEmail = user?.email || '';
+  const [date, setDate] = useState(() => formatLocalYmd());
+  const [bodyWeightKg, setBodyWeightKg] = useState('');
   const [notes, setNotes] = useState('');
   const [exercises, setExercises] = useState([
     { name: '', sets: [{ weight: '', reps: '', notes: '' }] }
@@ -121,34 +128,15 @@ export function TrainingLogPage({ user, onNavigate }) {
     error: null
   });
 
-  useEffect(() => {
-    if (effectiveEmail && date) {
-      loadLogForDate(date);
-    }
-  }, [effectiveEmail, date]);
-
-  const loadLogForDate = async (selectedDate) => {
+  const loadLogForDate = useCallback(async (selectedDate) => {
     setLoading(true);
     setMsg(null);
     try {
       const res = await fitmentorApi.getWorkoutLog(effectiveEmail, selectedDate);
-      let foundLog = res?.log;
-
-      if (!foundLog && effectiveEmail) {
-        try {
-          const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
-          const raw = localStorage.getItem(userLogsKey);
-          if (raw) {
-            const logsMap = JSON.parse(raw);
-            if (logsMap && logsMap[selectedDate]) {
-              foundLog = logsMap[selectedDate];
-            }
-          }
-        } catch {}
-      }
+      const foundLog = res?.log;
 
       if (foundLog) {
-        if (foundLog.bodyWeightKg) setBodyWeightKg(foundLog.bodyWeightKg);
+        setBodyWeightKg(foundLog.bodyWeightKg ?? '');
         setNotes(foundLog.notes || '');
         if (Array.isArray(foundLog.exercises) && foundLog.exercises.length > 0) {
           setExercises(foundLog.exercises);
@@ -157,40 +145,26 @@ export function TrainingLogPage({ user, onNavigate }) {
         }
       } else {
         // Reset state for dates without existing logs
+        setBodyWeightKg('');
         setNotes('');
         setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
       }
     } catch (err) {
       console.error('Error loading workout log:', err);
-      let foundLog = null;
-      if (effectiveEmail) {
-        try {
-          const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
-          const raw = localStorage.getItem(userLogsKey);
-          if (raw) {
-            const logsMap = JSON.parse(raw);
-            if (logsMap && logsMap[selectedDate]) {
-              foundLog = logsMap[selectedDate];
-            }
-          }
-        } catch {}
-      }
-      if (foundLog) {
-        if (foundLog.bodyWeightKg) setBodyWeightKg(foundLog.bodyWeightKg);
-        setNotes(foundLog.notes || '');
-        if (Array.isArray(foundLog.exercises) && foundLog.exercises.length > 0) {
-          setExercises(foundLog.exercises);
-        } else {
-          setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
-        }
-      } else {
-        setNotes('');
-        setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
-      }
+      setMsg({ type: 'error', text: err?.message || 'טעינת האימון מ-AWS נכשלה' });
+      setBodyWeightKg('');
+      setNotes('');
+      setExercises([{ name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [effectiveEmail]);
+
+  useEffect(() => {
+    if (effectiveEmail && date) {
+      loadLogForDate(date);
+    }
+  }, [date, effectiveEmail, loadLogForDate]);
 
   const handleAddExercise = () => {
     setExercises(prev => [...prev, { name: '', sets: [{ weight: '', reps: '', notes: '' }] }]);
@@ -235,7 +209,7 @@ export function TrainingLogPage({ user, onNavigate }) {
 
   const handleSaveLog = async (e) => {
     e.preventDefault();
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = formatLocalYmd();
     if (date > todayStr) {
       setSaveModal({
         isOpen: true,
@@ -265,30 +239,8 @@ export function TrainingLogPage({ user, onNavigate }) {
     };
 
     try {
-      // 1. API request
       await fitmentorApi.saveWorkoutLog(effectiveEmail, date, payloadLog);
 
-      // 2. Save locally for instant Progress Page sync
-      if (effectiveEmail) {
-        const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
-        let existingLogs = {};
-        try {
-          const raw = localStorage.getItem(userLogsKey);
-          if (raw) existingLogs = JSON.parse(raw);
-        } catch (err) {
-          console.error("Local storage parse error:", err);
-        }
-        existingLogs[date] = {
-          date,
-          bodyWeightKg,
-          notes,
-          exercises,
-          savedAt: new Date().toISOString()
-        };
-        localStorage.setItem(userLogsKey, JSON.stringify(existingLogs));
-      }
-
-      // 3. Show Success Modal state
       setTimeout(() => {
         setSaveModal({
           isOpen: true,
@@ -302,30 +254,12 @@ export function TrainingLogPage({ user, onNavigate }) {
     } catch (err) {
       console.error('Error saving workout log:', err);
 
-      // Backup save locally anyway
-      if (effectiveEmail) {
-        const userLogsKey = `fitmentor_user_logs_${effectiveEmail}`;
-        let existingLogs = {};
-        try {
-          const raw = localStorage.getItem(userLogsKey);
-          if (raw) existingLogs = JSON.parse(raw);
-        } catch {}
-        existingLogs[date] = {
-          date,
-          bodyWeightKg,
-          notes,
-          exercises,
-          savedAt: new Date().toISOString()
-        };
-        localStorage.setItem(userLogsKey, JSON.stringify(existingLogs));
-      }
-
       setSaveModal({
         isOpen: true,
-        status: 'success',
-        title: 'האימון נרשם בהצלחה! 🎉',
-        subtitle: 'כל הביצועים והתרגילים עודכנו בפרופיל האישי ובדף המעקב 🚀',
-        error: null
+        status: 'error',
+        title: 'שמירת האימון נכשלה',
+        subtitle: 'הנתונים לא נשמרו. נסה שוב כשהחיבור ל-AWS זמין.',
+        error: err?.message || 'שגיאה בשמירה לענן'
       });
     } finally {
       setLoading(false);
@@ -400,10 +334,10 @@ export function TrainingLogPage({ user, onNavigate }) {
             id="workoutDate"
             className="tl-date-input"
             value={date}
-            max={new Date().toISOString().split('T')[0]}
+            max={formatLocalYmd()}
             onChange={e => {
               const selected = e.target.value;
-              const today = new Date().toISOString().split('T')[0];
+              const today = formatLocalYmd();
               if (selected > today) {
                 alert('לא ניתן לבחור תאריך עתידי לתיעוד אימון');
                 setDate(today);
@@ -567,11 +501,11 @@ export function TrainingLogPage({ user, onNavigate }) {
                   id="bodyWeightKg"
                   className="tl-input"
                   step="0.1"
-                  min="30"
-                  max="250"
+                  min="20"
+                  max="400"
                   placeholder="לדוגמה: 75"
                   value={bodyWeightKg}
-                  onChange={e => setBodyWeightKg(Number(e.target.value))}
+                  onChange={e => setBodyWeightKg(e.target.value)}
                 />
               </div>
 
@@ -724,4 +658,3 @@ export function TrainingLogPage({ user, onNavigate }) {
     </main>
   );
 }
-

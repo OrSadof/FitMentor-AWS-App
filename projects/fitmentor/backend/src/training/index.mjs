@@ -1,65 +1,44 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { errorResponse, getAuthenticatedIdentity, HttpError } from "./auth.mjs";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 
-const METRICS_USER_ID = "__METRICS__";
-const METRICS_TOTAL_KEY = "TOTAL";
-
-async function incrementMetric(field, by = 1) {
-  const safeBy = Number(by) || 0;
-  if (!field || safeBy === 0) return;
-  await docClient.send(new UpdateCommand({
-    TableName: TABLE_NAME,
-    Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY },
-    UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
-    ExpressionAttributeNames: { "#f": String(field) },
-    ExpressionAttributeValues: { ":zero": 0, ":inc": safeBy, ":now": new Date().toISOString() }
-  }));
-}
-
 export const handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
   };
 
   try {
     if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
 
-    const body = event?.body ? (typeof event.body === "string" ? JSON.parse(event.body) : event.body) : event;
+    const identity = getAuthenticatedIdentity(event);
+    const body = event?.body ? (typeof event.body === "string" ? JSON.parse(event.body) : event.body) : {};
+    const { action, payload = {} } = body || {};
+    if (!action) throw new HttpError(400, "Missing action");
 
-    if (!body || (!body.action && !body.userId)) {
-      throw new Error("Invalid request body structure");
-    }
-    const { action, userId, payload } = body;
-
-    if (!action || !userId) {
-      return { statusCode: 400, headers, body: JSON.stringify({ message: "Missing fields" }) };
-    }
-
-    const normalizedUserId = userId.toLowerCase().trim();
+    const normalizedUserId = identity.userId;
     let result = {};
 
     switch (action) {
       case "saveWorkoutLog":
-        if (!payload.date || !payload.log) throw new Error("Missing date or log data");
-        await saveToDb(normalizedUserId, `TrainingLog_${payload.date}`, payload.log);
-        try { await incrementMetric("workoutsSavedTotal", 1); } catch {}
+        validateWorkoutDate(payload.date);
+        await saveToDb(normalizedUserId, `TrainingLog_${payload.date}`, validateWorkoutLog(payload.log));
         result = { message: "TrainingLog saved" };
         break;
 
       case "getWorkoutLog":
-        if (!payload.date) throw new Error("Missing date");
+        validateWorkoutDate(payload.date, { allowFuture: true });
         const logData = await getFromDb(normalizedUserId, `TrainingLog_${payload.date}`);
-        result = { log: logData };
+        result = { log: stripDatabaseKeys(logData) };
         break;
 
       case "deleteWorkoutLog":
-        if (!payload.date) throw new Error("Missing date");
+        validateWorkoutDate(payload.date, { allowFuture: true });
         await deleteFromDb(normalizedUserId, `TrainingLog_${payload.date}`);
         result = { message: "TrainingLog deleted" };
         break;
@@ -71,9 +50,65 @@ export const handler = async (event) => {
     return { statusCode: 200, headers, body: JSON.stringify(result) };
 
   } catch (error) {
-    return { statusCode: 500, headers, body: JSON.stringify({ message: error.message || "Internal Server Error" }) };
+    return errorResponse(error, headers);
   }
 };
+
+function validateWorkoutDate(value, { allowFuture = false } = {}) {
+  const date = String(value || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpError(400, "Invalid workout date");
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new HttpError(400, "Invalid workout date");
+  }
+  if (!allowFuture) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const today = `${values.year}-${values.month}-${values.day}`;
+    if (date > today) throw new HttpError(400, "Future workout dates are not allowed");
+  }
+}
+
+function validateWorkoutLog(log) {
+  if (!log || typeof log !== "object" || Array.isArray(log)) throw new HttpError(400, "Invalid workout log");
+  const bodyWeightKg = Number(log.bodyWeightKg);
+  if (!Number.isFinite(bodyWeightKg) || bodyWeightKg < 20 || bodyWeightKg > 400) {
+    throw new HttpError(400, "Body weight must be between 20 and 400 kg");
+  }
+  const notes = String(log.notes || "").trim();
+  if (notes.length > 2000) throw new HttpError(400, "Workout notes are too long");
+  if (!Array.isArray(log.exercises) || log.exercises.length === 0 || log.exercises.length > 50) {
+    throw new HttpError(400, "A workout must contain between 1 and 50 exercises");
+  }
+
+  const exercises = log.exercises.map((exercise) => {
+    const name = String(exercise?.name || "").trim();
+    if (!name || name.length > 120) throw new HttpError(400, "Invalid exercise name");
+    if (!Array.isArray(exercise.sets) || exercise.sets.length === 0 || exercise.sets.length > 20) {
+      throw new HttpError(400, "Each exercise must contain between 1 and 20 sets");
+    }
+    const sets = exercise.sets.map((set) => {
+      const weight = Number(set?.weight);
+      const reps = Number(set?.reps);
+      const setNotes = String(set?.notes || "").trim();
+      if (!Number.isFinite(weight) || weight < 0 || weight > 1000) throw new HttpError(400, "Invalid set weight");
+      if (!Number.isInteger(reps) || reps < 1 || reps > 1000) throw new HttpError(400, "Invalid repetition count");
+      if (setNotes.length > 500) throw new HttpError(400, "Set notes are too long");
+      return { weight, reps, notes: setNotes };
+    });
+    return { name, sets };
+  });
+
+  return { bodyWeightKg, notes, exercises, updatedAt: new Date().toISOString() };
+}
+
+function stripDatabaseKeys(item) {
+  if (!item) return null;
+  const { UserID: _userId, DataType: _dataType, ...log } = item;
+  return log;
+}
 
 async function saveToDb(userId, dataType, data) {
   await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: { UserID: userId, DataType: dataType, ...data } }));

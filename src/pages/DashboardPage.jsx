@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { fitmentorApi } from '../api/fitmentorApi';
 
 /* ─── Helper: clean AI-generated plan HTML ─── */
@@ -10,7 +11,46 @@ function cleanPlanHtml(html) {
   cleaned = cleaned.replace(/\n?```\s*$/i, '');
   cleaned = cleaned.replace(/```(?:html)?\s*\n/gi, '');
   cleaned = cleaned.replace(/\n\s*```/gi, '');
-  return cleaned.trim();
+  return DOMPurify.sanitize(cleaned.trim(), {
+    ALLOWED_TAGS: ['div', 'h2', 'h3', 'h4', 'p', 'strong', 'em', 'ul', 'ol', 'li', 'span', 'br', 'hr'],
+    ALLOWED_ATTR: ['class'],
+  });
+}
+
+function validatePlanForDisplay(html, expectedDays) {
+  const safeHtml = cleanPlanHtml(html);
+  const days = Number(expectedDays);
+  if (!safeHtml || !Number.isInteger(days) || days < 1 || days > 7) {
+    throw new Error('תוכנית האימון שהתקבלה אינה תקינה');
+  }
+  const parsed = parsePlanIntoDays(safeHtml);
+  if (parsed.days.length !== days) {
+    throw new Error(`DeepSeek החזיר ${parsed.days.length} מתוך ${days} ימי האימון שנדרשו`);
+  }
+  parsed.days.forEach((day, dayIndex) => {
+    const exercises = parseExercisesFromContent(day.content);
+    if (exercises.length !== 3) throw new Error(`יום ${dayIndex + 1} אינו כולל בדיוק 3 תרגילים`);
+    exercises.forEach((exercise) => {
+      const labels = new Set((exercise.statsBadges || []).map((badge) => badge.label));
+      if (!labels.has('סטים') || !labels.has('חזרות') || !labels.has('מנוחה')) {
+        throw new Error(`חסרים נתוני סטים, חזרות או מנוחה בתרגיל ${exercise.title}`);
+      }
+      if (!Array.isArray(exercise.setWeights) || exercise.setWeights.length !== 3) {
+        throw new Error(`חסרים משקלים מלאים בתרגיל ${exercise.title}`);
+      }
+      const weights = exercise.setWeights.map(Number);
+      if (weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) {
+        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים להיות מספרים חיוביים`);
+      }
+      if (!(weights[0] >= weights[1] && weights[1] >= weights[2])) {
+        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים לרדת או להישאר זהים בין הסטים`);
+      }
+      if (!exercise.technique || !exercise.progression) {
+        throw new Error(`חסרים דגשי טכניקה או התקדמות בתרגיל ${exercise.title}`);
+      }
+    });
+  });
+  return safeHtml;
 }
 
 /* ─── Helper: parse plan HTML/text into day-sections ───
@@ -28,7 +68,7 @@ function looksLikeDayTitle(text) {
 
   return (
     /^(?:יום|אימון|Day|Workout|Session|חלוקה|חלק)\b/i.test(t) ||
-    /^\s*(?:\d+|[A-Za-z])[.:\)\-–—]/i.test(t) ||
+    /^\s*(?:\d+|[A-Za-z])[.:)\-–—]/i.test(t) ||
     /^(?:אימון|יום)/i.test(t)
   );
 }
@@ -58,17 +98,17 @@ function parsePlanIntoDays(html) {
   let matches = headerMatches;
   if (matches.length < 2) {
     const dayHeaderRegex = /(?:<[a-zA-Z][^>]*>|###?\s*|^\s*\*\*\s*|^|\n)\s*(?:<\w+[^>]*>)*\s*((?:יום|אימון|Day|Workout)\s*(?:\d+|[א-ת]['']?|[A-Z]|ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)[^<\n*]*)/gi;
-    const fallbackMatches = [];
+    const alternativeMatches = [];
     while ((m = dayHeaderRegex.exec(cleaned)) !== null) {
       const candidate = (m[1] || m[0]).replace(/<[^>]*>/g, '').replace(/[*#`]/g, '').trim();
       if (candidate.length >= 3 && candidate.length < 110 && looksLikeDayTitle(candidate)) {
-        if (!fallbackMatches.some(f => Math.abs(f.index - m.index) < 10)) {
-          fallbackMatches.push({ title: candidate, index: m.index, endIndex: m.index + m[0].length });
+        if (!alternativeMatches.some(f => Math.abs(f.index - m.index) < 10)) {
+          alternativeMatches.push({ title: candidate, index: m.index, endIndex: m.index + m[0].length });
         }
       }
     }
-    if (fallbackMatches.length >= 2) {
-      matches = fallbackMatches;
+    if (alternativeMatches.length >= 2) {
+      matches = alternativeMatches;
     }
   }
 
@@ -168,10 +208,10 @@ function parseExercisesFromContent(rawContent) {
   const startExercise = (title) => {
     let cleanTitle = (title || '(תרגיל)')
       .replace(/^🏋️?\s*/, '')
-      .replace(/^\d+[\.\)\-:]\s*/, '')
-      .replace(/^תרגיל\s*\d*\s*[:.\-]?\s*/i, '')
+      .replace(/^\d+(?:[.):]|-)\s*/, '')
+      .replace(/^תרגיל\s*\d*\s*[:.-]?\s*/i, '')
       .replace(/^strong>\s*/i, '')
-      .replace(/[\:\-\–\—]$/, '')
+      .replace(/[:–—-]$/, '')
       .trim();
 
     if (!cleanTitle || cleanTitle.toLowerCase() === 'strong' || cleanTitle.toLowerCase() === 'strong>') {
@@ -199,7 +239,7 @@ function parseExercisesFromContent(rawContent) {
       ex.statsBadges.push({ label: 'סטים', val: sMatch[1].trim(), type: 'cyan' });
     }
 
-    const rMatch = line.match(/חזרות\s*[:\-–—]?\s*([\d\-\–—\s]+(?:חזרות)?)/i);
+    const rMatch = line.match(/חזרות\s*[:\-–—]?\s*([\d\-–—\s]+(?:חזרות)?)/i);
     if (rMatch && !ex.statsBadges.some(b => b.label === 'חזרות')) {
       const cleanReps = rMatch[1].trim();
       if (cleanReps && !['נקיות', '.', 'נקיות.'].includes(cleanReps)) {
@@ -207,7 +247,7 @@ function parseExercisesFromContent(rawContent) {
       }
     }
 
-    const mMatch = line.match(/מנוחה\s*[:\-–—]?\s*([\d\-\–—\s\w]+(?:שניות|דקות|sec|min)?)/i);
+    const mMatch = line.match(/מנוחה\s*[:\-–—]?\s*([\d\-–—\s\w]+(?:שניות|דקות|sec|min)?)/i);
     if (mMatch && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
       ex.statsBadges.push({ label: 'מנוחה', val: mMatch[1].trim(), type: 'purple' });
     }
@@ -219,16 +259,16 @@ function parseExercisesFromContent(rawContent) {
       if (!trimmedP) return;
 
       if (trimmedP.includes('סטים') && !ex.statsBadges.some(b => b.label === 'סטים')) {
-        const val = trimmedP.replace(/^.*סטים\s*[:\-]?\s*/i, '').trim();
+        const val = trimmedP.replace(/^.*סטים\s*[:-]?\s*/i, '').trim();
         if (val) ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
       } else if (trimmedP.includes('חזרות') && !ex.statsBadges.some(b => b.label === 'חזרות')) {
-        const val = trimmedP.replace(/^.*חזרות\s*[:\-]?\s*/i, '').trim();
-        const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s\.\,]+|[\s\.\,]+$/g, '');
+        const val = trimmedP.replace(/^.*חזרות\s*[:-]?\s*/i, '').trim();
+        const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s.,]+|[\s.,]+$/g, '');
         if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal)) {
           ex.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
         }
       } else if (trimmedP.includes('מנוחה') && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
-        const val = trimmedP.replace(/^.*מנוחה\s*[:\-]?\s*/i, '').trim();
+        const val = trimmedP.replace(/^.*מנוחה\s*[:-]?\s*/i, '').trim();
         if (val) ex.statsBadges.push({ label: 'מנוחה', val, type: 'purple' });
       }
     });
@@ -238,7 +278,7 @@ function parseExercisesFromContent(rawContent) {
     // Explicit Exercise Header Criteria:
     const isHeader =
       line.includes('🏋️') || line.includes('🏋') ||
-      /^\d+[\.\)\-:]\s*/.test(line) ||
+      /^\d+(?:[.):]|-)\s*/.test(line) ||
       /^תרגיל\s*\d*/i.test(line) ||
       (!isDetailLine(line) && broadExerciseKeyword.test(line) && line.length <= 80);
 
@@ -312,40 +352,13 @@ function parseExercisesFromContent(rawContent) {
 
   const cleanExercises = exercises.filter(ex => ex.title && ex.title !== 'strong>' && ex.title !== '<strong' && ex.title !== 'strong');
 
-  cleanExercises.forEach(ex => {
-    if (!ex.statsBadges.some(b => b.label === 'סטים')) {
-      ex.statsBadges.push({ label: 'סטים', val: '3 סטים', type: 'cyan' });
-    }
-    if (!ex.statsBadges.some(b => b.label === 'חזרות')) {
-      ex.statsBadges.push({ label: 'חזרות', val: '8-12 חזרות', type: 'emerald' });
-    }
-    if (!ex.statsBadges.some(b => b.label === 'מנוחה')) {
-      ex.statsBadges.push({ label: 'מנוחה', val: '60 שניות', type: 'purple' });
-    }
-
-    if (ex.setWeights && ex.setWeights.length === 1) {
-      const w1 = ex.setWeights[0];
-      ex.setWeights = [w1, Math.max(1, Math.round(w1 * 0.85 * 10) / 10), Math.max(1, Math.round(w1 * 0.75 * 10) / 10)];
-    } else if (ex.setWeights && ex.setWeights.length === 2) {
-      const w2 = ex.setWeights[1];
-      ex.setWeights.push(Math.max(1, Math.round(w2 * 0.85 * 10) / 10));
-    }
-
-    // If technique was parsed into extra details from the AI response, move it to technique
-    if (!ex.technique || ex.technique.trim().length === 0) {
-      if (ex.extraDetails && ex.extraDetails.length > 0) {
-        ex.technique = ex.extraDetails.shift();
-      }
-    }
-  });
-
   return cleanExercises;
 }
 
 function PlanExerciseItem({ ex }) {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Display ONLY what the DeepSeek AI API returned — no hardcoded static fallbacks
+  // Display only values returned and validated from the DeepSeek response.
   const setWeights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
   const hasWeightText = ex.weightText && ex.weightText.length > 0;
 
@@ -437,26 +450,26 @@ function PlanExerciseItem({ ex }) {
   );
 }
 
-function RenderFormattedDayContent({ rawContent, bodyWeightKg, fitnessLevel }) {
+function RenderFormattedDayContent({ rawContent }) {
   if (!rawContent) return null;
 
   const exercises = parseExercisesFromContent(rawContent);
 
   if (exercises.length === 0) {
-    return <div className="plan-day-raw-fallback" dangerouslySetInnerHTML={{ __html: rawContent }} />;
+    return <div className="plan-validation-error">מבנה יום האימון אינו תקין.</div>;
   }
 
   return (
     <div className="plan-exercises-list">
       {exercises.map((ex, i) => (
-        <PlanExerciseItem key={i} ex={ex} bodyWeightKg={bodyWeightKg} fitnessLevel={fitnessLevel} />
+        <PlanExerciseItem key={i} ex={ex} />
       ))}
     </div>
   );
 }
 
 /* ─── Plan Day Accordion Card ─── */
-function PlanDayCard({ day, index, isOpen, onToggle, bodyWeightKg, fitnessLevel }) {
+function PlanDayCard({ day, index, isOpen, onToggle }) {
   const dayIcons = ['🏋️', '💪', '🔥', '⚡', '🎯', '🚀', '🌟'];
   const icon = dayIcons[index % dayIcons.length];
 
@@ -473,7 +486,7 @@ function PlanDayCard({ day, index, isOpen, onToggle, bodyWeightKg, fitnessLevel 
       </button>
       {isOpen && (
         <div className="plan-day-body">
-          <RenderFormattedDayContent rawContent={day.content} bodyWeightKg={bodyWeightKg} fitnessLevel={fitnessLevel} />
+          <RenderFormattedDayContent rawContent={day.content} />
         </div>
       )}
     </div>
@@ -485,7 +498,7 @@ function PlanDayCard({ day, index, isOpen, onToggle, bodyWeightKg, fitnessLevel 
    renders every exercise in full (sets / reps / rest, technique focus,
    progressive-overload notes and extra details) — independent of which
    accordions are open on screen. Hidden normally, shown only under @media print. */
-function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel }) {
+function PrintablePlan({ name, intro, days }) {
   const today = new Date().toLocaleDateString('he-IL', { day: 'numeric', month: 'long', year: 'numeric' });
 
   const findBadge = (ex, label) => ex.statsBadges.find(b => b.label === label);
@@ -540,7 +553,7 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
               </div>
 
               {exercises.length === 0 ? (
-                <div className="pp-day-raw" dangerouslySetInnerHTML={{ __html: day.content }} />
+                <div className="plan-validation-error">מבנה יום האימון אינו תקין להדפסה.</div>
               ) : (
                 <>
                   <table className="pp-table">
@@ -589,12 +602,11 @@ function PrintablePlan({ name, intro, days, rawHtml, bodyWeightKg, fitnessLevel 
           );
         })
       ) : (
-        /* Fallback: raw plan HTML when day-parsing failed */
         <section className="pp-day">
           <div className="pp-day-header">
             <h2 className="pp-day-title">תוכנית האימונים</h2>
           </div>
-          <div className="pp-day-raw" dangerouslySetInnerHTML={{ __html: rawHtml }} />
+          <div className="plan-validation-error">לא ניתן להדפיס תוכנית שמבנהּ אינו תקין.</div>
         </section>
       )}
     </div>
@@ -612,7 +624,7 @@ function renderMarkdownInline(str) {
   formatted = formatted.replace(/\*([^*]+)\*/g, '<em class="chat-italic-highlight">$1</em>');
 
   // 3. Highlight dates: "ב-3/8", "3/8", "15/08/2026", "2026-08-15"
-  formatted = formatted.replace(/(?:📅\s*)?(?:ב-)?(\d{1,2}[\/\.]\d{1,2}(?:[\/\.]\d{2,4})?|\d{4}-\d{2}-\d{2})(?!\d)/g, '<span class="chat-date-pill">📅 $1</span>');
+  formatted = formatted.replace(/(?:📅\s*)?(?:ב-)?(\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?|\d{4}-\d{2}-\d{2})(?!\d)/g, '<span class="chat-date-pill">📅 $1</span>');
 
   // 4. Highlight weight stats: "108 ק"ג", "80 קילו", "24kg"
   formatted = formatted.replace(/(?:💪\s*)?(\d+(?:\.\d+)?\s*(?:ק"ג|ק״ג|קילו|קג|kg|KG))\b/gi, '<span class="chat-stat-pill chat-stat-weight">💪 $1</span>');
@@ -626,18 +638,23 @@ function renderMarkdownInline(str) {
   return formatted;
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function formatChatResponseToHtml(text) {
   if (!text) return '';
 
-  if (/<(div|h2|h3|blockquote|p|ul|ol)\b[^>]*>/i.test(text)) {
-    return text;
-  }
-
-  let raw = text;
+  let raw = escapeHtml(text);
   raw = raw.replace(/\s+(#{2,3}\s+)/g, '\n$1');
   raw = raw.replace(/\s+(---|[*]{3})\s*/g, '\n$1\n');
-  raw = raw.replace(/\s+(\d+[\.\)])\s+/g, '\n$1 ');
-  raw = raw.replace(/\s+([•\-\*])\s+/g, '\n$1 ');
+  raw = raw.replace(/\s+(\d+[.)])\s+/g, '\n$1 ');
+  raw = raw.replace(/\s+([•\-*])\s+/g, '\n$1 ');
 
   const lines = raw.split('\n');
   let htmlResult = '<div class="chat-markdown-container">';
@@ -673,7 +690,7 @@ function formatChatResponseToHtml(text) {
       return;
     }
 
-    const numMatch = trimmed.match(/^(\d+)[\.\)]\s*(.*)/);
+    const numMatch = trimmed.match(/^(\d+)[.)]\s*(.*)/);
     if (numMatch) {
       const numLabel = numMatch[1];
       const content = renderMarkdownInline(numMatch[2]);
@@ -681,7 +698,7 @@ function formatChatResponseToHtml(text) {
       return;
     }
 
-    const bulletMatch = trimmed.match(/^([•\-\*])\s*(.*)/);
+    const bulletMatch = trimmed.match(/^([•\-*])\s*(.*)/);
     if (bulletMatch) {
       const content = renderMarkdownInline(bulletMatch[2]);
       htmlResult += `<div class="chat-list-row chat-list-subrow"><div class="chat-list-content">${content}</div></div>`;
@@ -693,7 +710,10 @@ function formatChatResponseToHtml(text) {
   });
 
   htmlResult += '</div>';
-  return htmlResult;
+  return DOMPurify.sanitize(htmlResult, {
+    ALLOWED_TAGS: ['div', 'h2', 'h3', 'p', 'strong', 'em', 'span', 'blockquote', 'hr'],
+    ALLOWED_ATTR: ['class'],
+  });
 }
 
 function sanitizeAiMessageText(text) {
@@ -710,17 +730,7 @@ function sanitizeAiMessageText(text) {
       if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim().length > 0) {
         return parsed.reply.trim();
       }
-    } catch (e) {
-      // Regex extract "reply": "..." if JSON parsing failed due to truncation
-      const replyMatch = str.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-      if (replyMatch && replyMatch[1]) {
-        try {
-          return JSON.parse(`"${replyMatch[1]}"`).trim();
-        } catch {
-          return replyMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
-        }
-      }
-    }
+    } catch {}
   }
 
   return str;
@@ -751,6 +761,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [isHidingScrollBtn, setIsHidingScrollBtn] = useState(false);
 
@@ -758,8 +769,6 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
   const messagesContainerRef = useRef(null);
   const inputRef = useRef(null);
   const isClickScrollingRef = useRef(false);
-
-  const storageKey = `fitmentor_chat_sessions_${effectiveEmail}`;
 
   const scrollToBottom = (behavior = 'smooth') => {
     if (messagesContainerRef.current) {
@@ -785,45 +794,11 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     }
   };
 
-  // Load chat sessions from localStorage & sync from AWS DynamoDB Cloud
+  // Load the conversation history exclusively from AWS DynamoDB.
   useEffect(() => {
     if (!effectiveEmail) return;
-
-    // 1. Initial instant load from localStorage
-    let initialSessions = [];
-    try {
-      const raw = localStorage.getItem(storageKey);
-      initialSessions = raw ? JSON.parse(raw) : [];
-
-      if (!Array.isArray(initialSessions) || initialSessions.length === 0) {
-        const legacyRaw = localStorage.getItem(`fitmentor_chat_messages_${effectiveEmail}`);
-        if (legacyRaw) {
-          try {
-            const legacyMsgs = JSON.parse(legacyRaw);
-            if (Array.isArray(legacyMsgs) && legacyMsgs.length > 0) {
-              const firstUser = legacyMsgs.find(m => m.role === 'user');
-              const initTitle = firstUser ? (firstUser.text.slice(0, 28) + (firstUser.text.length > 28 ? '...' : '')) : 'שיחה קודמת';
-              initialSessions = [{
-                id: 'session_legacy',
-                title: initTitle,
-                updatedAt: Date.now(),
-                messages: legacyMsgs
-              }];
-            }
-          } catch (e) { }
-        }
-      }
-
-      if (Array.isArray(initialSessions) && initialSessions.length > 0) {
-        setSessions(initialSessions);
-        setActiveSessionId(initialSessions[0].id);
-      }
-    } catch (err) {
-      console.error('Error reading local chat sessions:', err);
-    }
-
-    // 2. Async cloud fetch from AWS DynamoDB to sync sessions across devices
     let isMounted = true;
+    setChatError('');
     fitmentorApi.getChatHistory(effectiveEmail)
       .then(res => {
         if (!isMounted) return;
@@ -844,22 +819,17 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
         if (cloudSessions.length > 0) {
           setSessions(cloudSessions);
           setActiveSessionId(prev => (cloudSessions.some(s => s.id === prev) ? prev : cloudSessions[0].id));
-          try {
-            localStorage.setItem(storageKey, JSON.stringify(cloudSessions));
-          } catch (e) { }
-        } else if (!initialSessions || initialSessions.length === 0) {
+        } else {
           const newId = 'session_' + Date.now();
           const fresh = [{ id: newId, title: 'שיחה חדשה', updatedAt: Date.now(), messages: [] }];
           setSessions(fresh);
           setActiveSessionId(newId);
-          try {
-            localStorage.setItem(storageKey, JSON.stringify(fresh));
-          } catch (e) { }
         }
       })
       .catch(err => {
         console.error('Error syncing cloud chat history:', err);
-        if (!initialSessions || initialSessions.length === 0) {
+        if (isMounted) {
+          setChatError(err?.message || 'טעינת היסטוריית השיחות מ-AWS נכשלה');
           const newId = 'session_' + Date.now();
           const fresh = [{ id: newId, title: 'שיחה חדשה', updatedAt: Date.now(), messages: [] }];
           setSessions(fresh);
@@ -871,8 +841,11 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
   }, [effectiveEmail]);
 
   // Active session object & messages
-  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0] || { id: 'default', messages: [] };
-  const currentMessages = activeSession.messages || [];
+  const activeSession = useMemo(
+    () => sessions.find(s => s.id === activeSessionId) || sessions[0] || { id: 'default', messages: [] },
+    [activeSessionId, sessions]
+  );
+  const currentMessages = useMemo(() => activeSession.messages || [], [activeSession]);
 
   // Scroll to bottom on message update
   useEffect(() => {
@@ -907,18 +880,15 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     };
   }, [isOpen, isMaximized]);
 
-  const updateAndSaveSessions = (newList) => {
-    setSessions(newList);
+  const updateAndSaveSessions = async (newList) => {
+    if (!effectiveEmail) return;
+    setChatError('');
     try {
-      localStorage.setItem(storageKey, JSON.stringify(newList));
+      await fitmentorApi.saveChatHistory(effectiveEmail, newList);
+      setSessions(newList);
     } catch (err) {
-      console.error('Error saving local chat sessions:', err);
-    }
-    // Sync with AWS DynamoDB cloud asynchronously
-    if (effectiveEmail) {
-      fitmentorApi.saveChatHistory(effectiveEmail, newList).catch(err => {
-        console.error('Error saving chat history to cloud:', err);
-      });
+      console.error('Error saving chat history to AWS:', err);
+      setChatError(err?.message || 'שמירת היסטוריית השיחות ב-AWS נכשלה');
     }
   };
 
@@ -932,7 +902,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     };
     const updated = [newSession, ...sessions];
     setActiveSessionId(newId);
-    updateAndSaveSessions(updated);
+    void updateAndSaveSessions(updated);
     setShowHistory(false);
   };
 
@@ -948,12 +918,12 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
         messages: []
       }];
       setActiveSessionId(newId);
-      updateAndSaveSessions(fresh);
+      void updateAndSaveSessions(fresh);
     } else {
       if (activeSessionId === sessionId) {
         setActiveSessionId(updated[0].id);
       }
-      updateAndSaveSessions(updated);
+      void updateAndSaveSessions(updated);
     }
   };
 
@@ -980,25 +950,20 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
     };
 
     const updatedSessionsList = sessions.map(s => s.id === activeSession.id ? updatedSession : s);
-    updateAndSaveSessions(updatedSessionsList);
+    setSessions(updatedSessionsList);
+    setChatError('');
     setChatLoading(true);
 
     try {
       const res = await fitmentorApi.chat(effectiveEmail, userMsg, effectiveName, updatedSessionsList, activeSession.id);
-      if (res?.reply) {
-        const cleanReply = sanitizeAiMessageText(res.reply);
-        const aiMsgObj = { role: 'ai', text: cleanReply, timestamp: Date.now() };
-        const finalMessages = [...updatedMessages, aiMsgObj];
-        const finalSession = { ...updatedSession, updatedAt: Date.now(), messages: finalMessages };
-        updateAndSaveSessions(sessions.map(s => s.id === activeSession.id ? finalSession : s));
-      }
+      if (!Array.isArray(res?.sessions) || !res?.activeSessionId || !res?.reply) throw new Error('AWS returned an invalid chat response');
+      setSessions(res.sessions);
+      setActiveSessionId(res.activeSessionId);
       if (res?.updatedPlanHtml) onPlanUpdate(res.updatedPlanHtml);
       if (res?.uiAction === 'openNewPlanForm') onOpenNewPlanForm();
     } catch (err) {
-      const errObj = { role: 'ai', text: 'שגיאה בתקשורת עם ה-AI: ' + err.message, timestamp: Date.now() };
-      const finalMessages = [...updatedMessages, errObj];
-      const finalSession = { ...updatedSession, updatedAt: Date.now(), messages: finalMessages };
-      updateAndSaveSessions(sessions.map(s => s.id === activeSession.id ? finalSession : s));
+      setSessions(sessions);
+      setChatError(err?.message || 'השיחה עם DeepSeek נכשלה');
     } finally {
       setChatLoading(false);
     }
@@ -1034,7 +999,7 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
               <div className="chat-panel-name">FitMentor AI</div>
               <div className="chat-panel-status">
                 <span className="chat-status-dot" />
-                מאמן אישי זמין 24/7
+                DeepSeek עם נתוני AWS האישיים שלך
               </div>
             </div>
           </div>
@@ -1167,6 +1132,12 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
                     </div>
                   </div>
                 )}
+                {chatError && (
+                  <div className="chat-msg ai" role="alert">
+                    <div className="chat-msg-avatar">⚠️</div>
+                    <div className="chat-msg-bubble">{chatError}</div>
+                  </div>
+                )}
                 <div ref={messagesEndRef} />
               </div>
 
@@ -1237,22 +1208,23 @@ function PlanBuilderForm({ generating, onSubmit, onCancel }) {
       <div className="plan-form-grid">
         <div className="form-group">
           <label className="form-label">גיל</label>
-          <input type="number" className="form-input" placeholder="25" min="12" max="100" value={dAge} onChange={e => setDAge(Number(e.target.value))} />
+          <input type="number" className="form-input" placeholder="25" min="13" max="100" value={dAge} onChange={e => setDAge(Number(e.target.value))} />
         </div>
         <div className="form-group">
           <label className="form-label">מגדר</label>
           <select className="form-select" value={dGender} onChange={e => setDGender(e.target.value)}>
             <option value="male">זכר</option>
             <option value="female">נקבה</option>
+            <option value="other">אחר / מעדיף לא לציין</option>
           </select>
         </div>
         <div className="form-group">
           <label className="form-label">משקל (ק"ג)</label>
-          <input type="number" className="form-input" placeholder="70" min="30" max="250" value={dWeight} onChange={e => setDWeight(Number(e.target.value))} />
+          <input type="number" className="form-input" placeholder="70" min="30" max="400" value={dWeight} onChange={e => setDWeight(Number(e.target.value))} />
         </div>
         <div className="form-group">
           <label className="form-label">גובה (ס"מ)</label>
-          <input type="number" className="form-input" placeholder="175" min="100" max="250" value={dHeight} onChange={e => setDHeight(Number(e.target.value))} />
+          <input type="number" className="form-input" placeholder="175" min="120" max="230" value={dHeight} onChange={e => setDHeight(Number(e.target.value))} />
         </div>
       </div>
 
@@ -1290,8 +1262,9 @@ function PlanBuilderForm({ generating, onSubmit, onCancel }) {
           <label className="form-label">ציוד זמין</label>
           <select className="form-select" value={dEquipment} onChange={e => setDEquipment(e.target.value)}>
             <option value="gym">🏢 חדר כושר מלא</option>
-            <option value="home_dumbbells">🏠 משקולות יד</option>
+            <option value="dumbbells">🏠 משקולות יד</option>
             <option value="bodyweight">🌳 משקל גוף בלבד</option>
+            <option value="minimal">🧰 ציוד ביתי מינימלי</option>
           </select>
         </div>
       </div>
@@ -1326,34 +1299,34 @@ function serializeDaysToHtml(days, intro, tips) {
   }
 
   (days || []).forEach((day) => {
-    html += `<h3>${day.title}</h3>\n`;
+    html += `<h3>${escapeHtml(day.title)}</h3>\n`;
     (day.exercises || []).forEach((ex) => {
-      html += `<p>🏋️ <strong>${ex.title}</strong></p>\n`;
+      html += `<p>🏋️ <strong>${escapeHtml(ex.title)}</strong></p>\n`;
 
       const stats = [];
-      if (ex.setsCount) stats.push(`<strong>סטים:</strong> ${ex.setsCount}`);
-      if (ex.repsVal) stats.push(`<strong>חזרות:</strong> ${ex.repsVal}`);
-      if (ex.restVal) stats.push(`<strong>מנוחה:</strong> ${ex.restVal}`);
+      if (ex.setsCount) stats.push(`<strong>סטים:</strong> ${escapeHtml(ex.setsCount)}`);
+      if (ex.repsVal) stats.push(`<strong>חזרות:</strong> ${escapeHtml(ex.repsVal)}`);
+      if (ex.restVal) stats.push(`<strong>מנוחה:</strong> ${escapeHtml(ex.restVal)}`);
       if (stats.length > 0) {
         html += `<p>${stats.join(' | ')}</p>\n`;
       }
 
       if (Array.isArray(ex.setWeights) && ex.setWeights.length > 0) {
-        const setStr = ex.setWeights.map((w, idx) => `סט ${idx + 1}: ${w} ק"ג`).join(' | ');
+        const setStr = ex.setWeights.map((w, idx) => `סט ${idx + 1}: ${escapeHtml(w)} ק"ג`).join(' | ');
         html += `<p><strong>משקל מומלץ:</strong> ${setStr}</p>\n`;
       } else if (ex.weightText) {
-        html += `<p><strong>משקל מומלץ:</strong> ${ex.weightText}</p>\n`;
+        html += `<p><strong>משקל מומלץ:</strong> ${escapeHtml(ex.weightText)}</p>\n`;
       }
 
       if (ex.technique) {
-        html += `<p><strong>דגשי טכניקה:</strong> ${ex.technique}</p>\n`;
+        html += `<p><strong>דגש טכניקה:</strong> ${escapeHtml(ex.technique)}</p>\n`;
       }
       if (ex.progression) {
-        html += `<p><strong>התקדמות עומס והסבר:</strong> ${ex.progression}</p>\n`;
+        html += `<p><strong>התקדמות עומס:</strong> ${escapeHtml(ex.progression)}</p>\n`;
       }
       if (Array.isArray(ex.extraDetails) && ex.extraDetails.length > 0) {
         ex.extraDetails.forEach(det => {
-          if (det) html += `<p>${det}</p>\n`;
+          if (det) html += `<p>${escapeHtml(det)}</p>\n`;
         });
       }
       html += '\n';
@@ -1367,7 +1340,7 @@ function serializeDaysToHtml(days, intro, tips) {
   return html;
 }
 
-function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight, onAddSet, onRemoveSet, onRemoveEx }) {
+function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight }) {
   return (
     <div className="editable-ex-card">
       <div className="editable-ex-header">
@@ -1381,9 +1354,6 @@ function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight, o
             placeholder="שם התרגיל"
           />
         </div>
-        <button type="button" className="btn-remove-ex" onClick={() => onRemoveEx(dIdx, eIdx)}>
-          🗑️ הסר תרגיל
-        </button>
       </div>
 
       <div className="editable-ex-badges-grid">
@@ -1434,14 +1404,6 @@ function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight, o
               <span>ק"ג</span>
             </div>
           ))}
-          <button type="button" className="btn-set-action" onClick={() => onAddSet(dIdx, eIdx)}>
-            ➕ הוסף סט
-          </button>
-          {ex.setWeights.length > 1 && (
-            <button type="button" className="btn-set-action" onClick={() => onRemoveSet(dIdx, eIdx)}>
-              🗑️ הסר סט
-            </button>
-          )}
         </div>
       </div>
 
@@ -1468,7 +1430,7 @@ function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight, o
   );
 }
 
-function EditableDayCard({ day, dIdx, isOpen, onToggle, onUpdateField, onUpdateWeight, onAddSet, onRemoveSet, onRemoveEx, onAddEx }) {
+function EditableDayCard({ day, dIdx, isOpen, onToggle, onUpdateField, onUpdateWeight }) {
   const dayIcons = ['🏋️', '💪', '🔥', '⚡', '🎯', '🚀', '🌟'];
   const icon = dayIcons[dIdx % dayIcons.length];
 
@@ -1492,14 +1454,8 @@ function EditableDayCard({ day, dIdx, isOpen, onToggle, onUpdateField, onUpdateW
               eIdx={eIdx}
               onUpdateField={onUpdateField}
               onUpdateWeight={onUpdateWeight}
-              onAddSet={onAddSet}
-              onRemoveSet={onRemoveSet}
-              onRemoveEx={onRemoveEx}
             />
           ))}
-          <button type="button" className="btn-add-ex-day" onClick={() => onAddEx(dIdx)}>
-            ➕ הוסף תרגיל חדש ליום זה
-          </button>
         </div>
       )}
     </div>
@@ -1507,13 +1463,14 @@ function EditableDayCard({ day, dIdx, isOpen, onToggle, onUpdateField, onUpdateW
 }
 
 export function DashboardPage({ user }) {
-  const effectiveEmail = user?.email || localStorage.getItem('fitmentor_userId') || '';
-  const effectiveName = user?.name || user?.displayName || localStorage.getItem('fitmentor_displayName') || 'מתאמן';
+  const effectiveEmail = user?.email || '';
+  const effectiveName = user?.name || user?.displayName || 'משתמש';
 
   const [planHtml, setPlanHtml] = useState(null);
   const [planParams, setPlanParams] = useState(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
   const [isBuildingPlan, setIsBuildingPlan] = useState(false);
+  const [planError, setPlanError] = useState('');
   const [generating, setGenerating] = useState(false);
   const [showNewPlanModal, setShowNewPlanModal] = useState(false);
   const [openDayIndices, setOpenDayIndices] = useState({});
@@ -1524,42 +1481,64 @@ export function DashboardPage({ user }) {
   const [editableDays, setEditableDays] = useState([]);
   const [savingEdits, setSavingEdits] = useState(false);
 
-  // AI Chat state
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
+  const pollForGeneratedPlan = useCallback(async (requestId, expectedDays) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 180000) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const response = await fitmentorApi.getPlan(effectiveEmail);
+      const generation = response?.generation;
+      if (generation?.requestId !== requestId) continue;
+      if (generation.status === 'error') {
+        throw new Error(generation.message || 'DeepSeek לא הצליח ליצור תוכנית תקינה');
+      }
+      if (generation.status === 'complete' && response?.plan?.planHtml) {
+        return {
+          planHtml: validatePlanForDisplay(response.plan.planHtml, expectedDays),
+          params: response.plan.params,
+        };
+      }
+    }
+    throw new Error('יצירת התוכנית לא הסתיימה בזמן. לא נשמרו נתוני דמה.');
+  }, [effectiveEmail]);
+
+  const loadPlan = useCallback(async () => {
+    setLoadingPlan(true);
+    setPlanError('');
+    let loadedPlanHtml = null;
+    try {
+      const res = await fitmentorApi.getPlan(effectiveEmail);
+      if (res?.plan?.planHtml) {
+        loadedPlanHtml = validatePlanForDisplay(res.plan.planHtml, Number(res.plan?.params?.days));
+        setPlanHtml(loadedPlanHtml);
+        setPlanParams(res.plan.params);
+      } else {
+        setPlanHtml(null);
+        setPlanParams(null);
+      }
+
+      if (res?.generation?.status === 'processing' && res.generation.requestId) {
+        setIsBuildingPlan(true);
+        const generated = await pollForGeneratedPlan(res.generation.requestId, Number(res.generation.days));
+        setPlanHtml(generated.planHtml);
+        setPlanParams(generated.params);
+      } else if (res?.generation?.status === 'error') {
+        setPlanError(res.generation.message || 'יצירת התוכנית האחרונה נכשלה');
+      }
+    } catch (err) {
+      console.error('Error loading plan:', err);
+      if (!loadedPlanHtml) setPlanHtml(null);
+      setPlanError(err?.message || 'טעינת התוכנית מ-AWS נכשלה');
+    } finally {
+      setIsBuildingPlan(false);
+      setLoadingPlan(false);
+    }
+  }, [effectiveEmail, pollForGeneratedPlan]);
 
   useEffect(() => {
     if (effectiveEmail) {
       loadPlan();
-      loadChatHistory();
     }
-  }, [effectiveEmail]);
-
-  const loadPlan = async () => {
-    setLoadingPlan(true);
-    try {
-      const res = await fitmentorApi.getPlan(effectiveEmail);
-      if (res?.plan?.planHtml) {
-        setPlanHtml(res.plan.planHtml);
-      } else {
-        setPlanHtml(null);
-      }
-      if (res?.plan?.params) {
-        setPlanParams(res.plan.params);
-        try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(res.plan.params)); } catch (e) { }
-      }
-    } catch (err) {
-      console.error('Error loading plan:', err);
-      setPlanHtml(null);
-    } finally {
-      try {
-        const raw = localStorage.getItem(`fitmentor_plan_params_${effectiveEmail}`);
-        if (raw) setPlanParams(JSON.parse(raw));
-      } catch (e) { }
-      setLoadingPlan(false);
-    }
-  };
+  }, [effectiveEmail, loadPlan]);
 
   const startEditingPlan = () => {
     const parsed = parsePlanIntoDays(cleanPlanHtml(planHtml));
@@ -1571,10 +1550,10 @@ export function DashboardPage({ user }) {
         const mBadge = ex.statsBadges?.find(b => b.label === 'מנוחה');
         return {
           title: ex.title,
-          setsCount: sBadge ? sBadge.val : '3 סטים',
-          repsVal: rBadge ? rBadge.val : '8-12 חזרות',
-          restVal: mBadge ? mBadge.val : '60 שניות',
-          setWeights: Array.isArray(ex.setWeights) && ex.setWeights.length > 0 ? [...ex.setWeights] : [20, 17.5, 15],
+          setsCount: sBadge?.val || '',
+          repsVal: rBadge?.val || '',
+          restVal: mBadge?.val || '',
+          setWeights: Array.isArray(ex.setWeights) ? [...ex.setWeights] : [],
           weightText: ex.weightText || '',
           technique: ex.technique || '',
           progression: ex.progression || '',
@@ -1592,14 +1571,21 @@ export function DashboardPage({ user }) {
   const handleSavePlanEdits = async () => {
     setSavingEdits(true);
     try {
-      const parsed = parsePlanIntoDays(cleanPlanHtml(planHtml));
-      const newHtml = serializeDaysToHtml(editableDays, parsed.intro, null);
-      await fitmentorApi.savePlan(effectiveEmail, newHtml, planParams);
-      setPlanHtml(newHtml);
+      const safeCurrentPlan = cleanPlanHtml(planHtml);
+      const parsed = parsePlanIntoDays(safeCurrentPlan);
+      const tipsMatch = safeCurrentPlan.match(/<div\s+class=["']plan-tips["'][^>]*>([\s\S]*?)<\/div>/i);
+      if (!tipsMatch?.[1]) throw new Error('חסרים טיפים מקוריים בתוכנית');
+      const newHtml = validatePlanForDisplay(
+        serializeDaysToHtml(editableDays, parsed.intro, tipsMatch[1]),
+        Number(planParams?.days)
+      );
+      const response = await fitmentorApi.savePlan(effectiveEmail, newHtml, planParams);
+      setPlanHtml(validatePlanForDisplay(response?.plan?.planHtml, Number(planParams?.days)));
+      setPlanError('');
       setIsEditingPlan(false);
     } catch (err) {
       console.error('Error saving plan edits:', err);
-      alert('שגיאה בשמירת השינויים בתוכנית. אנא נסה שוב.');
+      setPlanError(err?.message || 'שגיאה בשמירת השינויים בתוכנית');
     } finally {
       setSavingEdits(false);
     }
@@ -1622,130 +1608,35 @@ export function DashboardPage({ user }) {
     setEditableDays(prev => {
       const copy = JSON.parse(JSON.stringify(prev));
       const num = Number(val);
-      copy[dIdx].exercises[eIdx].setWeights[setIdx] = isNaN(num) ? 0 : num;
+      copy[dIdx].exercises[eIdx].setWeights[setIdx] = val === '' || Number.isNaN(num) ? '' : num;
       return copy;
     });
-  };
-
-  const addSetToExercise = (dIdx, eIdx) => {
-    setEditableDays(prev => {
-      const copy = JSON.parse(JSON.stringify(prev));
-      const ex = copy[dIdx].exercises[eIdx];
-      const lastW = ex.setWeights.length > 0 ? ex.setWeights[ex.setWeights.length - 1] : 15;
-      ex.setWeights.push(Math.max(1, Math.round(lastW * 0.85 * 10) / 10));
-      const sNum = ex.setWeights.length;
-      ex.setsCount = `${sNum} סטים`;
-      return copy;
-    });
-  };
-
-  const removeSetFromExercise = (dIdx, eIdx) => {
-    setEditableDays(prev => {
-      const copy = JSON.parse(JSON.stringify(prev));
-      const ex = copy[dIdx].exercises[eIdx];
-      if (ex.setWeights.length > 1) {
-        ex.setWeights.pop();
-        const sNum = ex.setWeights.length;
-        ex.setsCount = `${sNum} סטים`;
-      }
-      return copy;
-    });
-  };
-
-  const addExerciseToDay = (dIdx) => {
-    setEditableDays(prev => {
-      const copy = JSON.parse(JSON.stringify(prev));
-      copy[dIdx].exercises.push({
-        title: 'תרגיל חדש',
-        setsCount: '3 סטים',
-        repsVal: '8-12 חזרות',
-        restVal: '60 שניות',
-        setWeights: [25, 22.5, 20],
-        weightText: '',
-        technique: 'שמור על גב ישר וטווח תנועה מלא.',
-        progression: 'העלה עומס באופן מדורג.',
-        extraDetails: []
-      });
-      return copy;
-    });
-  };
-
-  const removeExerciseFromDay = (dIdx, eIdx) => {
-    setEditableDays(prev => {
-      const copy = JSON.parse(JSON.stringify(prev));
-      copy[dIdx].exercises.splice(eIdx, 1);
-      return copy;
-    });
-  };
-
-  const loadChatHistory = async () => {
-    try {
-      const res = await fitmentorApi.getChatHistory(effectiveEmail);
-      if (res?.messages) setChatMessages(res.messages);
-    } catch (err) {
-      console.error('Error loading chat:', err);
-    }
   };
 
   const handleCreatePlan = async (params) => {
+    const previousPlanHtml = planHtml;
+    const previousPlanParams = planParams;
     setGenerating(true);
-    setPlanHtml(null); // Instantly clear previous plan from screen while generating new plan!
-    const reqDays = Math.max(1, parseInt(params?.days, 10) || 3);
+    setIsBuildingPlan(true);
+    setPlanError('');
+    setPlanHtml(null);
+    const reqDays = Number(params?.days);
     try {
-      let finalPlanHtml = null;
-
-      try {
-        const res = await fitmentorApi.generatePlan(effectiveEmail, params);
-        if (res?.plan?.planHtml) {
-          const html = res.plan.planHtml;
-          const h3Count = (html.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-          if (h3Count >= 1 && html.length > 2000) {
-            finalPlanHtml = html;
-          }
-        }
-      } catch (genErr) {
-        console.warn('generatePlan HTTP call cut off or timed out, continuing background DB polling...', genErr);
-      }
-
-      // If initial response did not contain full plan, poll DB for up to 480 seconds (8 minutes)
-      if (!finalPlanHtml) {
-        console.log(`Polling DynamoDB for background DeepSeek plan generation (${reqDays} days)...`);
-        const pollStartTime = Date.now();
-
-        while (Date.now() - pollStartTime < 480000) {
-          await new Promise(r => setTimeout(r, 4000));
-          try {
-            const checkRes = await fitmentorApi.getPlan(effectiveEmail);
-            if (checkRes?.plan?.planHtml) {
-              const html = checkRes.plan.planHtml;
-              const h3Count = (html.match(/<h3[^>]*>[\s\S]*?<\/h3>/gi) || []).length;
-              // Accept any plan with at least 1 day heading and substantial content
-              if (h3Count >= 1 && html.length > 2000) {
-                finalPlanHtml = html;
-                console.log(`Successfully retrieved ${h3Count}-day plan from DB after ${Math.round((Date.now() - pollStartTime)/1000)}s (requested ${reqDays} days)`);
-                break;
-              }
-            }
-          } catch (pollErr) {
-            console.warn('Polling error:', pollErr);
-          }
-        }
-      }
-
-      if (!finalPlanHtml) {
-        throw new Error('ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר');
-      }
-
-      setPlanHtml(finalPlanHtml);
-      setPlanParams(params);
-      try { localStorage.setItem(`fitmentor_plan_params_${effectiveEmail}`, JSON.stringify(params)); } catch (e) { }
+      const response = await fitmentorApi.generatePlan(effectiveEmail, params);
+      if (response?.status !== 'processing' || !response?.requestId) throw new Error('AWS לא התחיל את יצירת התוכנית');
+      const generated = await pollForGeneratedPlan(response.requestId, reqDays);
+      setPlanHtml(generated.planHtml);
+      setPlanParams(generated.params);
       setIsBuildingPlan(false);
       setShowNewPlanModal(false);
       setOpenDayIndices({});
     } catch (err) {
       console.error('AI plan generation failed:', err);
-      alert(err.message || 'ה-API נקלע לקשיים של עומס, אנא נסה שוב מאוחר יותר');
+      setPlanHtml(previousPlanHtml);
+      setPlanParams(previousPlanParams);
+      setPlanError(err?.message || 'DeepSeek לא הצליח ליצור תוכנית תקינה');
     } finally {
+      setIsBuildingPlan(false);
       setGenerating(false);
     }
   };
@@ -1766,32 +1657,6 @@ export function DashboardPage({ user }) {
   const parsedPlan = parsePlanIntoDays(cleanedPlan);
   const planDays = parsedPlan.days || [];
   const planIntro = parsedPlan.intro || null;
-
-  // Diagnostics: if a plan splits into very few days, dump the raw AI HTML so
-  // the exact format can be seen (this earlier hid a "header contains goal"
-  // case that collapsed 6 days into 1).
-  if (planDays.length <= 2 && cleanedPlan) {
-    console.warn('[FitMentor] plan parsed into only', planDays.length, 'day(s).',
-      'titles=', planDays.map((d) => d.title),
-      'RAW_HTML=', cleanedPlan.slice(0, 2500));
-  }
-
-  // Body weight & fitness level for the suggested weight-per-set
-  const introWeightMatch = cleanedPlan.match(/משקל\s*(\d+(?:\.\d+)?)\s*ק"ג/);
-  const bodyWeightKg = Number(planParams?.weight) || (introWeightMatch ? Number(introWeightMatch[1]) : 0) || 0;
-  const fitnessLevel = planParams?.fitnessLevel || 'beginner';
-
-  const isAllOpen = planDays.length > 0 && planDays.every((_, idx) => openDayIndices[idx] !== false);
-
-  const toggleAllDays = () => {
-    if (isAllOpen) {
-      setOpenDayIndices({});
-    } else {
-      const allObj = {};
-      planDays.forEach((_, idx) => { allObj[idx] = true; });
-      setOpenDayIndices(allObj);
-    }
-  };
 
   return (
     <>
@@ -1816,6 +1681,14 @@ export function DashboardPage({ user }) {
           <p className="hero-subtitle" style={{ opacity: 1, animation: 'none', marginBottom: '35px', fontSize: '1.15rem' }}>
             כאן תוכל לצפות בתוכנית האימונים המותאמת אישית ולשוחח עם מאמן ה-AI שלך 24/7!
           </p>
+
+          {planError && (
+            <div className="dash-empty-state" role="alert" style={{ marginBottom: '24px' }}>
+              <div className="dash-empty-icon">⚠️</div>
+              <h2>לא ניתן להציג תוכנית</h2>
+              <p>{planError}</p>
+            </div>
+          )}
 
           {/* 1. Loader State */}
           {loadingPlan && (
@@ -1920,7 +1793,7 @@ export function DashboardPage({ user }) {
               {/* Edit Mode Banner */}
               {isEditingPlan && (
                 <div className="plan-edit-banner">
-                  <span>✏️ מצב עריכה פעיל — ערוך סטים, משקלים (ק"ג), תרגילים ודגשי טכניקה באופן חופשי!</span>
+                  <span>✏️ מצב עריכה פעיל — ערוך את פרטי שלושת התרגילים תוך שמירה על מבנה התוכנית.</span>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="dash-action-btn dash-action-btn--save" onClick={handleSavePlanEdits} disabled={savingEdits}>
                       {savingEdits ? '⏳ שומר...' : '💾 שמור שינויים'}
@@ -1932,7 +1805,7 @@ export function DashboardPage({ user }) {
                 </div>
               )}
 
-              {/* Accordion days OR editable view OR raw fallback */}
+              {/* Validated accordion days or constrained editable view */}
               {isEditingPlan ? (
                 <div className="plan-days-container">
                   {editableDays.map((day, dIdx) => (
@@ -1944,10 +1817,6 @@ export function DashboardPage({ user }) {
                       onToggle={() => setOpenDayIndices(prev => ({ ...prev, [dIdx]: !prev[dIdx] }))}
                       onUpdateField={updateExerciseField}
                       onUpdateWeight={updateSetWeight}
-                      onAddSet={addSetToExercise}
-                      onRemoveSet={removeSetFromExercise}
-                      onRemoveEx={removeExerciseFromDay}
-                      onAddEx={addExerciseToDay}
                     />
                   ))}
                 </div>
@@ -1960,17 +1829,10 @@ export function DashboardPage({ user }) {
                       index={idx}
                       isOpen={Boolean(openDayIndices[idx])}
                       onToggle={() => setOpenDayIndices(prev => ({ ...prev, [idx]: !prev[idx] }))}
-                      bodyWeightKg={bodyWeightKg}
-                      fitnessLevel={fitnessLevel}
                     />
                   ))}
                 </div>
-              ) : (
-                /* Fallback: raw HTML in a styled card */
-                <div className="plan-raw-card">
-                  <div className="ai-plan-result" dangerouslySetInnerHTML={{ __html: cleanedPlan }} />
-                </div>
-              )}
+              ) : <div className="plan-validation-error">לא ניתן להציג תוכנית שמבנהּ אינו תקין.</div>}
 
               {/* Quick tip card */}
               <div className="dash-tip-card">
@@ -1983,9 +1845,6 @@ export function DashboardPage({ user }) {
               name={effectiveName}
               intro={planIntro}
               days={planDays}
-              rawHtml={cleanedPlan}
-              bodyWeightKg={bodyWeightKg}
-              fitnessLevel={fitnessLevel}
             />
             </>
           )}

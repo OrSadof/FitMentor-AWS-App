@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef } from 'react'
 import './App.css'
 import { fitmentorApi } from './api/fitmentorApi'
-import { DashboardPage } from './pages/DashboardPage'
-import { TrainingLogPage } from './pages/TrainingLogPage'
-import { ProgressPage } from './pages/ProgressPage'
-import { AdminDashboardPage } from './pages/AdminDashboardPage'
+
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })));
+const TrainingLogPage = lazy(() => import('./pages/TrainingLogPage').then((module) => ({ default: module.TrainingLogPage })));
+const ProgressPage = lazy(() => import('./pages/ProgressPage').then((module) => ({ default: module.ProgressPage })));
+const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage').then((module) => ({ default: module.AdminDashboardPage })));
 
 /* ─── Helpers ─── */
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -12,37 +13,8 @@ const EMAIL_VALIDATION_MESSAGE = "האימייל צריך להיות בצורה 
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
 const PASSWORD_VALIDATION_MESSAGE = "הסיסמה חייבת להכיל לפחות 8 תווים, אות גדולה, אות קטנה ומספר";
 
-function checkIsAdminUser(emailInput) {
-  const email = (emailInput || localStorage.getItem('fitmentor_userId') || '').toLowerCase().trim();
-  const role = (localStorage.getItem('fitmentor_role') || '').toLowerCase().trim();
-  return (
-    role === 'admin' ||
-    email === 'orsadof@gmail.com' ||
-    email === 'admin@fitmentor.com'
-  );
-}
-
 function fmNormalizeEmail(email) {
   return String(email || "").toLowerCase().trim();
-}
-
-function recordUserLogin(emailInput) {
-  const email = fmNormalizeEmail(emailInput);
-  if (!email || checkIsAdminUser(email)) return;
-  const todayYmd = new Date().toISOString().split('T')[0];
-  try {
-    const key = `fitmentor_user_logins_${email}`;
-    const raw = localStorage.getItem(key);
-    let dates = [];
-    if (raw) {
-      try { dates = JSON.parse(raw); } catch {}
-    }
-    if (!Array.isArray(dates)) dates = [];
-    if (!dates.includes(todayYmd)) {
-      dates.push(todayYmd);
-      localStorage.setItem(key, JSON.stringify(dates));
-    }
-  } catch {}
 }
 
 function decodeJwtPayload(token) {
@@ -69,6 +41,29 @@ function extractDisplayNameFromIdToken(idToken) {
   if (!payload || typeof payload !== "object") return "";
   const name = payload.name || payload.given_name || payload["cognito:username"] || "";
   return typeof name === "string" ? name.trim() : "";
+}
+
+function getTokenIdentity(idToken) {
+  const payload = decodeJwtPayload(idToken);
+  if (!payload || typeof payload !== 'object') return null;
+  if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) * 1000 <= Date.now()) return null;
+  const groups = Array.isArray(payload['cognito:groups']) ? payload['cognito:groups'] : [];
+  const email = fmNormalizeEmail(payload.email || payload['cognito:username'] || payload.username);
+  if (!email) return null;
+  return { email, groups, isAdmin: groups.includes('Admins') };
+}
+
+function checkIsAdminUser() {
+  return Boolean(getTokenIdentity(localStorage.getItem('fitmentor_idToken'))?.isAdmin);
+}
+
+function clearStoredAuth() {
+  localStorage.removeItem('fitmentor_idToken');
+  localStorage.removeItem('fitmentor_accessToken');
+  localStorage.removeItem('fitmentor_refreshToken');
+  localStorage.removeItem('fitmentor_userId');
+  localStorage.removeItem('fitmentor_displayName');
+  localStorage.removeItem('fitmentor_role');
 }
 
 /* ─── Toast Component ─── */
@@ -188,12 +183,14 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
       }
       const token = res.idToken || res.token || res.accessToken;
       if (token) {
+        const identity = getTokenIdentity(token);
+        if (!identity) throw new Error('לא התקבל אסימון התחברות תקין');
         localStorage.setItem("fitmentor_idToken", token);
         localStorage.setItem("fitmentor_accessToken", res.accessToken || token);
         localStorage.setItem("fitmentor_refreshToken", res.refreshToken || "");
-        localStorage.setItem("fitmentor_userId", email);
+        localStorage.setItem("fitmentor_userId", identity.email);
 
-        const role = res.role || res.userRole || (email === "orsadof@gmail.com" ? "Admin" : "User");
+        const role = identity.isAdmin ? "Admin" : "User";
         localStorage.setItem("fitmentor_role", role);
 
         const displayName = res.userName || extractDisplayNameFromIdToken(token) || email;
@@ -204,14 +201,14 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
         setLoginSubtitle(`ברוך הבא, ${displayName}! מכין את סביבת העבודה 💪`);
 
         setTimeout(() => {
-          onLoginSuccess(displayName, email);
+          onLoginSuccess(displayName, identity.email);
           onClose();
           showToast(`שלום ${displayName}! התחברת בהצלחה ✅`);
         }, 1200);
       } else {
         throw new Error(res.message || 'לא התקבל אסימון התחברות');
       }
-    } catch (err) {
+    } catch {
       setLoginStatusClass('is-error');
       setLoginTitle('שגיאה בהתחברות');
       setLoginSubtitle('משהו השתבש, או שהאימייל או הסיסמה אינם נכונים.');
@@ -304,7 +301,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     try {
       await fitmentorApi.forgotPassword(email);
       resetUsernameRef.current = email;
-    } catch (err) {
+    } catch {
       // Suppress error for security against user enumeration
     } finally {
       setForgotSubmitting(false);
@@ -770,6 +767,7 @@ function App() {
   const [showConfirmedModal, setShowConfirmedModal] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [displayName, setDisplayName] = useState('');
+  const [currentUserEmail, setCurrentUserEmail] = useState('');
   const [activeTab, setActiveTab] = useState('landing'); // landing | dashboard | training | progress
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [toast, setToast] = useState({ message: '', type: '' });
@@ -808,17 +806,34 @@ function App() {
 
   useEffect(() => {
     const idToken = localStorage.getItem('fitmentor_idToken');
-    if (idToken) {
-      const userEmail = localStorage.getItem('fitmentor_userId') || '';
+    const identity = getTokenIdentity(idToken);
+    if (identity) {
+      const userEmail = identity.email;
+      localStorage.setItem('fitmentor_userId', userEmail);
       const name = extractDisplayNameFromIdToken(idToken) || localStorage.getItem('fitmentor_displayName') || userEmail || '';
       if (name) {
         setIsLoggedIn(true);
         setDisplayName(name);
-        recordUserLogin(userEmail);
-        const isAdmin = checkIsAdminUser(userEmail);
-        setActiveTab(isAdmin ? 'admin' : 'dashboard');
+        setCurrentUserEmail(userEmail);
+        setActiveTab(identity.isAdmin ? 'admin' : 'dashboard');
       }
+    } else if (idToken) {
+      clearStoredAuth();
     }
+  }, []);
+
+  useEffect(() => {
+    const handleExpiredSession = () => {
+      clearStoredAuth();
+      setIsLoggedIn(false);
+      setDisplayName('');
+      setCurrentUserEmail('');
+      setActiveTab('landing');
+      setIsSidebarOpen(false);
+      setToast({ message: 'פג תוקף ההתחברות. יש להתחבר מחדש.', type: 'error' });
+    };
+    window.addEventListener('fitmentor:auth-expired', handleExpiredSession);
+    return () => window.removeEventListener('fitmentor:auth-expired', handleExpiredSession);
   }, []);
 
   const showToast = (message, type = 'success') => {
@@ -828,9 +843,8 @@ function App() {
   const handleLoginSuccess = (name, userEmail) => {
     setIsLoggedIn(true);
     setDisplayName(name);
-    const email = userEmail || localStorage.getItem('fitmentor_userId') || '';
-    recordUserLogin(email);
-    const isAdmin = checkIsAdminUser(email);
+    setCurrentUserEmail(userEmail || getTokenIdentity(localStorage.getItem('fitmentor_idToken'))?.email || '');
+    const isAdmin = checkIsAdminUser();
     setActiveTab(isAdmin ? 'admin' : 'dashboard');
   };
 
@@ -854,14 +868,10 @@ function App() {
 
       // 3. Keep success view open for 2.2s so user can comfortably read it, then redirect to landing
       setTimeout(() => {
-        localStorage.removeItem('fitmentor_idToken');
-        localStorage.removeItem('fitmentor_accessToken');
-        localStorage.removeItem('fitmentor_refreshToken');
-        localStorage.removeItem('fitmentor_userId');
-        localStorage.removeItem('fitmentor_displayName');
-        localStorage.removeItem('fitmentor_role');
+        clearStoredAuth();
         setIsLoggedIn(false);
         setDisplayName('');
+        setCurrentUserEmail('');
         setActiveTab('landing');
         setIsSidebarOpen(false);
         setLogoutModal({ isOpen: false, status: 'idle', title: '', subtitle: '' });
@@ -870,8 +880,7 @@ function App() {
     }, 900);
   };
 
-  const currentEmail = localStorage.getItem('fitmentor_userId') || '';
-  const isAdmin = checkIsAdminUser(currentEmail);
+  const isAdmin = checkIsAdminUser();
 
   return (
     <>
@@ -1029,29 +1038,31 @@ function App() {
       )}
 
       {/* ===== PAGE ROUTING ===== */}
+      <Suspense fallback={<main className="page-loading" aria-live="polite">טוען את הנתונים מהענן...</main>}>
       {isLoggedIn && !isAdmin && activeTab === 'dashboard' && (
-        <DashboardPage user={{ email: localStorage.getItem('fitmentor_userId'), displayName }} />
+        <DashboardPage user={{ email: currentUserEmail, displayName }} />
       )}
 
       {isLoggedIn && !isAdmin && activeTab === 'training' && (
         <TrainingLogPage
-          user={{ email: localStorage.getItem('fitmentor_userId'), displayName }}
+          user={{ email: currentUserEmail, displayName }}
           onNavigate={(tab) => setActiveTab(tab)}
         />
       )}
 
       {isLoggedIn && !isAdmin && activeTab === 'progress' && (
-        <ProgressPage user={{ email: localStorage.getItem('fitmentor_userId'), displayName }} />
+        <ProgressPage user={{ email: currentUserEmail, displayName }} />
       )}
 
       {isLoggedIn && isAdmin && (
         <AdminDashboardPage
-          user={{ email: localStorage.getItem('fitmentor_userId'), displayName }}
+          user={{ email: currentUserEmail, displayName, isAdmin }}
           onNavigate={(tab) => setActiveTab(tab)}
           showToast={showToast}
           onLogout={handleLogout}
         />
       )}
+      </Suspense>
 
       {(!isLoggedIn || activeTab === 'landing') && (
         <>

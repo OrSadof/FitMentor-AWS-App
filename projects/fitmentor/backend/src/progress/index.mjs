@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { errorResponse, getAuthenticatedIdentity, HttpError } from "./auth.mjs";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 const client = new DynamoDBClient({});
@@ -8,23 +9,19 @@ const docClient = DynamoDBDocumentClient.from(client);
 export const handler = async (event) => {
 	const headers = {
 		"Access-Control-Allow-Origin": "*",
-		"Access-Control-Allow-Headers": "Content-Type",
+		"Access-Control-Allow-Headers": "Content-Type,Authorization",
 		"Access-Control-Allow-Methods": "OPTIONS,POST,GET",
 	};
 
 	try {
 		if (event?.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
 
-		const body = event?.body ? (typeof event.body === "string" ? JSON.parse(event.body) : event.body) : event;
-		const { action, userId, payload = {} } = body || {};
-		if (!action || !userId) {
-			return { statusCode: 400, headers, body: JSON.stringify({ message: "Missing fields" }) };
-		}
+		const identity = getAuthenticatedIdentity(event);
+		const body = event?.body ? (typeof event.body === "string" ? JSON.parse(event.body) : event.body) : {};
+		const { action, payload = {} } = body || {};
+		if (!action) throw new HttpError(400, "Missing action");
 
-		const normalizedUserId = String(userId).toLowerCase().trim();
-		if (!normalizedUserId) {
-			return { statusCode: 400, headers, body: JSON.stringify({ message: "Missing userId" }) };
-		}
+		const normalizedUserId = identity.userId;
 
 		switch (action) {
 			case "getProgressData": {
@@ -35,16 +32,15 @@ export const handler = async (event) => {
 				return { statusCode: 400, headers, body: JSON.stringify({ message: `Invalid action: ${action}` }) };
 		}
 	} catch (error) {
-		return {
-			statusCode: 500,
-			headers,
-			body: JSON.stringify({ message: error?.message || "Internal Server Error" }),
-		};
+		return errorResponse(error, headers);
 	}
 };
 
 async function handleGetProgressData(userId, payload) {
-	const maxDays = Number.isFinite(Number(payload?.days)) ? Number(payload.days) : 365;
+	const maxDays = Number(payload?.days ?? 365);
+	if (!Number.isInteger(maxDays) || maxDays < 1 || maxDays > 730) {
+		throw new HttpError(400, "Progress range must be between 1 and 730 days");
+	}
 	const trainingLogs = await queryTrainingLogs(userId);
 	return buildProgressFromTrainingLogs(trainingLogs, { maxDays });
 }
@@ -76,7 +72,7 @@ async function queryTrainingLogs(userId) {
     if (all.length > 0) {
       const logs = (all || [])
         .map((item) => {
-          const { UserID, DataType, Data, ...rest } = item || {};
+          const { UserID: _userId, DataType, Data, ...rest } = item || {};
           const date = String(DataType || "").replace(/^TrainingLog_/, "");
           const data = Data ?? rest;
           return { date, data };
@@ -275,8 +271,15 @@ function buildProgressFromTrainingLogs(logs, { maxDays = 365 } = {}) {
 
 	const prs = buildPrCards({ allTimeBestSet, allTimeBest1rm, today });
 	const insights = buildInsights({ dayAgg, today });
+	const achievements = prs.map((pr) => ({
+		icon: "🏆",
+		category: "שיא אישי",
+		title: pr.title,
+		description: `${pr.value} · ${pr.meta}`,
+		date: String(pr.meta || "").match(/\d{4}-\d{2}-\d{2}/)?.[0] || "",
+	}));
 
-	return { overview, heatmap, charts, prs, insights };
+	return { overview, heatmap, charts, prs, insights, achievements };
 }
 
 function buildExercise1rmChart({ dayAgg, recentDays, chartLabels }) {
@@ -330,7 +333,7 @@ function buildPrCards({ allTimeBestSet, allTimeBest1rm, today }) {
 		if (!rec || !Number.isFinite(rec.value)) continue;
 		prs.push({
 			title: liftLabels[key],
-			value: `${Math.round(rec.value)} ק\"ג`,
+			value: `${Math.round(rec.value)} ק"ג`,
 			meta: `שיא אישי · ${rec.date}`,
 			isNew: isWithinDays(rec.date, today, 14),
 		});
@@ -345,7 +348,7 @@ function buildPrCards({ allTimeBestSet, allTimeBest1rm, today }) {
 	for (const r of setPrs) {
 		prs.push({
 			title: r.name,
-			value: `${Math.round(r.weight)} ק\"ג × ${Math.round(r.reps)}`,
+			value: `${Math.round(r.weight)} ק"ג × ${Math.round(r.reps)}`,
 			meta: `שיא סט · ${r.date}`,
 			isNew: isWithinDays(r.date, today, 14),
 		});
