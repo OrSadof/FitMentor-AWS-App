@@ -15,6 +15,7 @@ import { handler as trainingHandler } from '../projects/fitmentor/backend/src/tr
 const {
   deepSeekModel,
   openRouterEndpoint,
+  getDeepSeekCallType,
   extractChatReply,
   normalizeRecommendations,
   sanitizeAndValidatePlan,
@@ -24,6 +25,9 @@ const {
 test('AI provider contract is pinned to the required DeepSeek model', () => {
   assert.equal(deepSeekModel, 'deepseek/deepseek-v4-flash-0731');
   assert.equal(openRouterEndpoint, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(getDeepSeekCallType(), 'planGeneration');
+  assert.equal(getDeepSeekCallType({ isChatCall: true }), 'chat');
+  assert.equal(getDeepSeekCallType({ systemPromptOverride: 'json-only' }), 'progressSummary');
 });
 
 function validExercise(name, weights = [30, 27.5, 25]) {

@@ -261,7 +261,7 @@ async function handleAdminGetDashboardData(identity, payload = {}) {
   ]).filter(Boolean));
   const [workoutsSavedTotal, aiCallsTotal, activityItems] = await Promise.all([
     countSavedWorkoutLogs(regularUserIds),
-    getUserMetricTotal(regularUserIds, "aiCallsTotal"),
+    getUserMetricTotal(regularUserIds, "deepSeekCallsTotal"),
     scanUserActivityItems(),
   ]);
   const activities = activityItems

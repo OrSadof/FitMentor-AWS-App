@@ -19,16 +19,32 @@ const docClient = DynamoDBDocumentClient.from(client);
 
 const USAGE_METRICS_KEY = "UsageMetrics";
 
-async function incrementUserMetric(userId, field, by = 1) {
+const DEEPSEEK_CALL_METRIC_FIELDS = Object.freeze({
+  planGeneration: "deepSeekPlanGenerationCalls",
+  chat: "deepSeekChatCalls",
+  progressSummary: "deepSeekProgressSummaryCalls",
+});
+
+function getDeepSeekCallType({ isChatCall = false, systemPromptOverride = null } = {}) {
+  if (isChatCall) return "chat";
+  if (systemPromptOverride) return "progressSummary";
+  return "planGeneration";
+}
+
+async function recordDeepSeekCall(userId, callType) {
   const normalizedUserId = String(userId || "").toLowerCase().trim();
-  const safeBy = Number(by) || 0;
-  if (!normalizedUserId || !field || safeBy === 0) return;
+  const metricField = DEEPSEEK_CALL_METRIC_FIELDS[callType];
+  if (!normalizedUserId) throw new HttpError(500, "DeepSeek usage identity is missing");
+  if (!metricField) throw new HttpError(500, "DeepSeek usage type is invalid");
   await docClient.send(new UpdateCommand({
     TableName: TABLE_NAME,
     Key: { UserID: normalizedUserId, DataType: USAGE_METRICS_KEY },
-    UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
-    ExpressionAttributeNames: { "#f": String(field) },
-    ExpressionAttributeValues: { ":zero": 0, ":inc": safeBy, ":now": new Date().toISOString() }
+    UpdateExpression: "SET #total = if_not_exists(#total, :zero) + :inc, #typed = if_not_exists(#typed, :zero) + :inc, updatedAt = :now",
+    ExpressionAttributeNames: {
+      "#total": "deepSeekCallsTotal",
+      "#typed": metricField,
+    },
+    ExpressionAttributeValues: { ":zero": 0, ":inc": 1, ":now": new Date().toISOString() }
   }));
 }
 
@@ -783,6 +799,7 @@ async function tryGenerateContent(promptText, {
 
   const timeoutMs = isChatCall ? 30000 : (systemPromptOverride ? 25000 : 50000);
   const maxTokens = maxTokensOverride ? maxTokensOverride : (isChatCall ? 2500 : MAX_OUTPUT_TOKENS);
+  const callType = getDeepSeekCallType({ isChatCall, systemPromptOverride });
   let systemPrompt = "You are DeepSeek, an elite master strength and conditioning sports scientist. Your exercise selections, per-set descending weights, and rich biomechanical technique instructions must be 100% complete and accurate. MANDATORY: For every single exercise without exception, you MUST include a dedicated paragraph <p><strong>דגש טכניקה:</strong> ...</p> containing rich, 2-sentence technique instructions. Never omit technique focus for any exercise. Return complete, concise, clean HTML for the workout plan.";
 
   if (systemPromptOverride) {
@@ -794,7 +811,7 @@ async function tryGenerateContent(promptText, {
   const t0 = Date.now();
 
   try {
-    console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, isChatCall=${isChatCall}`);
+    console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, callType=${callType}`);
     const requestPayload = {
       model: DEEPSEEK_MODEL,
       messages: [
@@ -805,6 +822,7 @@ async function tryGenerateContent(promptText, {
       temperature: systemPromptOverride ? 0.2 : 0.4
     };
 
+    await recordDeepSeekCall(userId, callType);
     const response = await fetchWithHardTimeout(OPENROUTER_ENDPOINT, {
       method: "POST",
       headers: {
@@ -826,7 +844,6 @@ async function tryGenerateContent(promptText, {
     const text = data.choices?.[0]?.message?.content;
 
     if (typeof text === "string" && text.trim().length > 0) {
-      try { await incrementUserMetric(userId, "aiCallsTotal", 1); } catch {}
       console.log(`[DEEPSEEK_SUCCESS] model=${DEEPSEEK_MODEL}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
       return text;
     }
@@ -1017,6 +1034,7 @@ async function appendPlanHistorySnapshot(userId, planHtml, params) {
 export const __testOnly = {
   deepSeekModel: DEEPSEEK_MODEL,
   openRouterEndpoint: OPENROUTER_ENDPOINT,
+  getDeepSeekCallType,
   extractChatReply,
   normalizeRecommendations,
   sanitizeAndValidatePlan,
