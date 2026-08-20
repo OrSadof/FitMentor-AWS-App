@@ -413,16 +413,6 @@ function PlanExerciseItem({ ex }) {
             </div>
           )}
 
-          {ex.weightBasis && (
-            <div className="plan-ex-box plan-ex-box--weight">
-              <div className="plan-ex-box-title">
-                <span className="box-icon">🧭</span>
-                <span>למה אלה המשקלים שהומלצו?</span>
-              </div>
-              <p className="plan-ex-box-text">{ex.weightBasis}</p>
-            </div>
-          )}
-
           {/* Technique Focus Box - Rendered directly from DeepSeek AI */}
           {ex.technique ? (
             <div className="plan-ex-box plan-ex-box--tech">
@@ -596,7 +586,6 @@ function PrintablePlan({ name, intro, days }) {
                             <td className="pp-col-num">{j + 1}</td>
                             <td className="pp-col-ex">
                               <div className="pp-ex-name">{ex.title}</div>
-                              {ex.weightBasis && <div className="pp-ex-detail"><span className="pp-detail-tag">בסיס המלצת המשקל</span>{ex.weightBasis}</div>}
                               {ex.technique && <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique}</div>}
                               {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">מתי להעלות משקל או חזרות?</span>{ex.progression}</div>}
                               {ex.extraDetails.map((det, k) => (

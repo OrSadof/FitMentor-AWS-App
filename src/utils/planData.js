@@ -73,7 +73,6 @@ export function structuredPlanToDisplayDays(planData) {
         technique: exercise.technique,
         progression: exercise.progression,
         loadType: exercise.loadType || null,
-        weightBasis: exercise.weightBasis || '',
         extraDetails: [],
         setWeights: [...exercise.weightsKg],
         weightText: '',

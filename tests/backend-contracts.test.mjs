@@ -112,8 +112,7 @@ function validStructuredPlan(days = 2) {
         prescriptionUnit: 'repetitions',
         restSeconds: 60,
         loadType: 'external',
-        weightsKg: [30, 27.5, 25],
-        weightBasis: 'המשקלים נשענים על ביצועי האימון האחרון ועל ירידת עומס מתונה בין הסטים.',
+        weightsKg: [25, 27.5, 30],
         technique: 'שמור על גב ניטרלי, נשימה מבוקרת וטווח תנועה מלא לאורך כל החזרה.',
         progression: 'כאשר כל החזרות נקיות, העלה מעט את המשקל באימון הבא.',
       })),
@@ -195,18 +194,17 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
     fitnessLevel: 'beginner',
     equipment: 'gym',
   });
-  const prompt = buildPlanGenerationPrompt(
-    params,
-    'אימון 1 | תאריך: 2026-08-20\n- לחיצת חזה: סט 1: 40 ק״ג × 10 חזרות; סט 2: 42.5 ק״ג × 9 חזרות',
-  );
-  assert.match(prompt, /גיל: 25/);
-  assert.match(prompt, /משקל גוף: 70 ק״ג/);
-  assert.match(prompt, /גובה: 175 ס״מ/);
-  assert.match(prompt, /בדיוק 2 ימי אימון/);
-  assert.match(prompt, /לחיצת חזה: סט 1: 40 ק״ג/);
-  assert.match(prompt, /תן עדיפות לביצועים המתועדים/);
-  assert.match(prompt, /שלושת הערכים החיוביים חייבים להיות שונים זה מזה/);
-  assert.match(prompt, /אובייקט JSON יחיד/);
+  const prompt = buildPlanGenerationPrompt(params);
+  assert.match(prompt, /גיל=25/);
+  assert.match(prompt, /משקל=70 ק״ג/);
+  assert.match(prompt, /גובה=175 ס״מ/);
+  assert.match(prompt, /בדיוק 2 ימים/);
+  assert.match(prompt, /ימי אימון=2/);
+  assert.match(prompt, /שלושה משקלים חיוביים בסדר עולה.*עד 10 ק״ג/);
+  assert.match(prompt, /אסור לבחור הליכון.*מכונת מדרגות/);
+  assert.match(prompt, /JSON Schema/);
+  assert.match(prompt, /אין HTML, Markdown, נימוקים/);
+  assert.doesNotMatch(prompt, /אימונים אמיתיים אחרונים|BMI/);
   assert.doesNotMatch(prompt, /<h3>|<div class=/);
   const responseFormat = buildPlanResponseFormat(2);
   assert.equal(responseFormat.type, 'json_schema');
@@ -215,7 +213,7 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   assert.equal(responseFormat.json_schema.schema.properties.days.items.properties.exercises.minItems, 3);
   assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('prescriptionUnit'));
   assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('loadType'));
-  assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('weightBasis'));
+  assert.ok(!responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('weightBasis'));
 
   const structuredPlan = validStructuredPlan(2);
   structuredPlan.days[0].exercises[0].nameHe = 'פלאנק';
@@ -225,10 +223,9 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   structuredPlan.days[0].exercises[0].prescriptionUnit = 'seconds';
   structuredPlan.days[0].exercises[0].loadType = 'bodyweight';
   structuredPlan.days[0].exercises[0].weightsKg = [0, 0, 0];
-  structuredPlan.days[0].exercises[0].weightBasis = 'ללא עומס חיצוני; ההתקדמות נעשית דרך משך ההחזקה.';
   structuredPlan.days[0].exercises[0].technique = 'קצר';
   structuredPlan.days[0].exercises[0].progression = 'עלה';
-  structuredPlan.days[0].exercises[1].weightsKg = [30.125, 27.55, 25.005];
+  structuredPlan.days[0].exercises[1].weightsKg = [25.005, 27.55, 30.125];
   structuredPlan.tips.nutrition = 'טיפ';
   const validated = validatePlanData(JSON.stringify(structuredPlan), params);
   assert.deepEqual(validated, structuredPlan);
@@ -237,7 +234,7 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   assert.match(validatedHtml, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
   assert.match(validatedHtml, /<strong>משך:<\/strong> 45-60 שניות/);
   assert.match(validatedHtml, /<strong>דגש טכניקה:<\/strong> קצר/);
-  assert.match(validatedHtml, /30\.125 ק״ג \| סט 2: 27\.55 ק״ג \| סט 3: 25\.005 ק״ג/);
+  assert.match(validatedHtml, /25\.005 ק״ג \| סט 2: 27\.55 ק״ג \| סט 3: 30\.125 ק״ג/);
   assert.equal((validatedHtml.match(/<h3>/g) || []).length, 2);
   assert.equal((validatedHtml.match(/🏋️/gu) || []).length, 6);
   assert.doesNotMatch(validatedHtml, /undefined|null/);
@@ -260,14 +257,14 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   identicalPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 30];
   assert.throws(
     () => validatePlanData(identicalPositiveWeights, params),
-    (error) => error.statusCode === 422 && /repeated/.test(error.message),
+    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
   );
 
   const partiallyRepeatedPositiveWeights = validStructuredPlan(2);
   partiallyRepeatedPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 27.5];
   assert.throws(
     () => validatePlanData(partiallyRepeatedPositiveWeights, params),
-    (error) => error.statusCode === 422 && /repeated/.test(error.message),
+    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
   );
 
   const externalWeightOnBodyweightExercise = validStructuredPlan(2);
@@ -287,8 +284,17 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
 
   const reorderedWeights = validStructuredPlan(2);
   reorderedWeights.days[0].exercises[0].weightsKg = [20, 30, 25];
-  const preservedWeights = validatePlanData(reorderedWeights, params);
-  assert.deepEqual(preservedWeights.days[0].exercises[0].weightsKg, [20, 30, 25]);
+  assert.throws(
+    () => validatePlanData(reorderedWeights, params),
+    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
+  );
+
+  const excessiveWeightJump = validStructuredPlan(2);
+  excessiveWeightJump.days[0].exercises[0].weightsKg = [40, 55, 70];
+  assert.throws(
+    () => validatePlanData(excessiveWeightJump, params),
+    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
+  );
 
   const missingHebrewName = validStructuredPlan(2);
   missingHebrewName.days[0].exercises[0].nameHe = '';

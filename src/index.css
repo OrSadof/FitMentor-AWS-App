@@ -2887,14 +2887,6 @@ ul {
   border-right: 3px solid #0284c7;
 }
 
-.plan-ex-box--weight {
-  border-right: 3px solid #fbbf24;
-}
-
-.plan-ex-box--weight .plan-ex-box-title {
-  color: #fbbf24;
-}
-
 .plan-ex-box-title {
   display: flex;
   align-items: center;
