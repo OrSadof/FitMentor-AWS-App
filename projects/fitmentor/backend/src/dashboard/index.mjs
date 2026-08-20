@@ -18,6 +18,7 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 
 const USAGE_METRICS_KEY = "UsageMetrics";
+const USAGE_METRIC_WRITE_TIMEOUT_MS = 1800;
 
 const DEEPSEEK_CALL_METRIC_FIELDS = Object.freeze({
   planGeneration: "deepSeekPlanGenerationCalls",
@@ -36,16 +37,27 @@ async function recordDeepSeekCall(userId, callType) {
   const metricField = DEEPSEEK_CALL_METRIC_FIELDS[callType];
   if (!normalizedUserId) throw new HttpError(500, "DeepSeek usage identity is missing");
   if (!metricField) throw new HttpError(500, "DeepSeek usage type is invalid");
-  await docClient.send(new UpdateCommand({
-    TableName: TABLE_NAME,
-    Key: { UserID: normalizedUserId, DataType: USAGE_METRICS_KEY },
-    UpdateExpression: "SET #total = if_not_exists(#total, :zero) + :inc, #typed = if_not_exists(#typed, :zero) + :inc, updatedAt = :now",
-    ExpressionAttributeNames: {
-      "#total": "deepSeekCallsTotal",
-      "#typed": metricField,
-    },
-    ExpressionAttributeValues: { ":zero": 0, ":inc": 1, ":now": new Date().toISOString() }
-  }));
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const timerId = setTimeout(() => controller.abort(), USAGE_METRIC_WRITE_TIMEOUT_MS);
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { UserID: normalizedUserId, DataType: USAGE_METRICS_KEY },
+      UpdateExpression: "SET #total = if_not_exists(#total, :zero) + :inc, #typed = if_not_exists(#typed, :zero) + :inc, updatedAt = :now",
+      ExpressionAttributeNames: {
+        "#total": "deepSeekCallsTotal",
+        "#typed": metricField,
+      },
+      ExpressionAttributeValues: { ":zero": 0, ":inc": 1, ":now": new Date().toISOString() }
+    }), { abortSignal: controller.signal });
+    console.log(`[DEEPSEEK_USAGE_RECORDED] callType=${callType}, took=${Date.now() - startedAt}ms`);
+  } catch (error) {
+    console.warn(`[DEEPSEEK_USAGE_FAILED] callType=${callType}, took=${Date.now() - startedAt}ms:`, error?.message || error);
+    throw new HttpError(503, "DeepSeek usage could not be recorded");
+  } finally {
+    clearTimeout(timerId);
+  }
 }
 
 const PLAN_HISTORY_PREFIX = "PlanHistory_";
@@ -572,17 +584,20 @@ async function handleChat(userId, payload) {
   const userName = payload?.userName;
   const requestedSessionId = normalizeChatText(payload?.activeSessionId, 100);
   if (!message) throw new HttpError(400, "Chat message is required");
+  const isWorkoutSummaryRequest = /(?:סכ(?:ם|מי)|סיכום|האימונים האחרונים|מה עשיתי באימונים|summari[sz]e|workout summary|recent workouts)/i.test(message);
   const [planData, chatData, history, trainingLogs] = await Promise.all([
     getFromDb(userId, "Plan"),
     getFromDb(userId, "ChatHistory"),
-    getPlanHistory(userId, CHAT_RECENT_PLAN_HISTORY_LIMIT),
+    isWorkoutSummaryRequest ? Promise.resolve([]) : getPlanHistory(userId, CHAT_RECENT_PLAN_HISTORY_LIMIT),
     getRecentTrainingLogs(userId, CHAT_RECENT_TRAINING_LOG_LIMIT),
   ]);
   const displayName = normalizeUserDisplayName(userName);
   const progress = computeProgressSignals(trainingLogs);
   const planParamsContext = buildChatProfileContext(planData?.params);
   const trainingLogsContext = buildChatTrainingContext(trainingLogs);
-  const historyContext = history.length > 0
+  const historyContext = isWorkoutSummaryRequest
+    ? "לא צורף — הבקשה עוסקת בלוגי האימונים האחרונים."
+    : history.length > 0
     ? buildPlanHistoryPromptContext(history)
     : "אין היסטוריית תוכניות קודמות בחלון הנתונים.";
 
@@ -602,7 +617,9 @@ async function handleChat(userId, payload) {
   const hasSavedPlan = Boolean(planData?.planHtml);
   const likelyPlanMutation = hasSavedPlan && /(?:שנ[הי]|שינוי|עדכ|החלף|הוסף|הורד|הסר|change|update|replace|add|remove)/i.test(message);
   const currentPlanContext = hasSavedPlan
-    ? (likelyPlanMutation ? String(planData.planHtml) : summarizePlanForPrompt(planData.planHtml, 4000))
+    ? (isWorkoutSummaryRequest
+        ? "לא צורפה — הבקשה עוסקת בביצועי האימונים המתועדים."
+        : (likelyPlanMutation ? String(planData.planHtml) : summarizePlanForPrompt(planData.planHtml, 3000)))
     : "אין תוכנית אימונים שמורה כרגע.";
   const todayYmd = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit",
@@ -624,6 +641,9 @@ async function handleChat(userId, payload) {
 - השתמש ב-**מודגש** במידה, רק לנתוני מפתח. לכל היותר 2 אימוג׳ים בתשובה רגילה.
 - אל תחזור על שאלת המשתמש, אל תוסיף כותרות ענק ואל תציג טבלאות.
 - בסיכום אימונים, הצג את כל האימונים שבחלון (עד 5), מהחדש לישן, עם המספרים המדויקים שנרשמו בלבד, וסיים בתובנה קצרה המבוססת על הנתונים.
+- הצג כל סט כ-"[משקל] ק״ג × [חזרות] חזרות" כדי שלא יהיה ספק מה מייצג כל מספר.
+- כשאתה מתאר מגמה לאורך זמן, השווה אך ורק בין האימון הישן ביותר בחלון לאימון החדש ביותר וציין את שני התאריכים. אל תשווה מינימום למקסימום כאילו הם נקודות ההתחלה והסיום.
+- הערת מתאמן יכולה להצביע על קשר אפשרי בלבד; אל תציג עייפות, שינה או אוכל כסיבה מוכחת לשינוי בביצועים.
 - בשאלת ידע כללית, אפשר לתת הדרכה מקצועית כללית אך יש להבחין בינה לבין מידע אישי שנמדד.
 
 פעולות תוכנית:
@@ -666,8 +686,10 @@ ${message}`;
     userId,
     isChatCall: true,
     systemPromptOverride: systemPrompt,
-    maxTokensOverride: likelyPlanMutation ? 6500 : 2200,
-    timeoutMsOverride: likelyPlanMutation ? 45000 : 30000,
+    maxTokensOverride: likelyPlanMutation ? 4500 : 1400,
+    timeoutMsOverride: 22000,
+    responseFormatOverride: CHAT_RESPONSE_FORMAT,
+    reasoningOverride: { effort: "none", exclude: true },
   });
   const parsedResponse = extractChatReply(rawResponse);
 
@@ -782,7 +804,29 @@ function computeProgressSignals(trainingLogs) {
 }
 
 function extractChatReply(raw) {
-  const parsed = parseDeepSeekJsonObject(raw, "DeepSeek returned invalid chat JSON");
+  let parsed;
+  try {
+    parsed = parseDeepSeekJsonObject(raw, "DeepSeek returned invalid chat JSON");
+  } catch (parseError) {
+    let genuineReply = String(raw || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/^```(?:json|markdown)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+    const malformedJsonReply = genuineReply.match(/"reply"\s*:\s*"([\s\S]*?)"\s*,\s*"updatedPlanHtml"/i)?.[1];
+    if (malformedJsonReply) {
+      genuineReply = malformedJsonReply
+        .replace(/\\n/g, "\n")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+    } else if (/^[{[]/.test(genuineReply)) {
+      throw parseError;
+    }
+    const reply = normalizeChatText(genuineReply, 5000);
+    if (!reply) throw parseError;
+    console.warn("[CHAT_JSON_FALLBACK] Using genuine DeepSeek text because the structured wrapper was malformed");
+    return { reply, updatedPlanHtml: null, uiAction: null };
+  }
 
   const reply = normalizeChatText(parsed?.reply, 5000);
   if (!reply) throw new HttpError(502, "DeepSeek returned a chat response without a reply");
@@ -795,8 +839,15 @@ function extractChatReply(raw) {
 }
 
 const MAX_OUTPUT_TOKENS = 8000;
+const CHAT_RESPONSE_FORMAT = Object.freeze({
+  type: "json_object",
+});
 
-async function fetchWithHardTimeout(url, options, timeoutMs) {
+const RECOMMENDATIONS_RESPONSE_FORMAT = Object.freeze({
+  type: "json_object",
+});
+
+async function fetchTextWithHardTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   let timerId = null;
 
@@ -812,12 +863,16 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
       fetch(url, { ...options, signal: controller.signal }),
       timeoutPromise
     ]);
-    if (timerId) clearTimeout(timerId);
-    return response;
+    const bodyText = await Promise.race([
+      response.text(),
+      timeoutPromise,
+    ]);
+    return { response, bodyText };
   } catch (err) {
-    if (timerId) clearTimeout(timerId);
     try { controller.abort(); } catch {}
     throw err;
+  } finally {
+    if (timerId) clearTimeout(timerId);
   }
 }
 
@@ -827,6 +882,8 @@ async function tryGenerateContent(promptText, {
   systemPromptOverride = null,
   maxTokensOverride = null,
   timeoutMsOverride = null,
+  responseFormatOverride = null,
+  reasoningOverride = null,
 } = {}) {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "DeepSeek is not configured");
 
@@ -852,11 +909,17 @@ async function tryGenerateContent(promptText, {
         { role: "user", content: promptText }
       ],
       max_tokens: maxTokens,
-      temperature: systemPromptOverride ? 0.2 : 0.4
+      temperature: systemPromptOverride ? 0.2 : 0.4,
+      provider: {
+        sort: "throughput",
+        require_parameters: Boolean(responseFormatOverride || reasoningOverride),
+      },
     };
+    if (responseFormatOverride) requestPayload.response_format = responseFormatOverride;
+    if (reasoningOverride) requestPayload.reasoning = reasoningOverride;
 
     await recordDeepSeekCall(userId, callType);
-    const response = await fetchWithHardTimeout(OPENROUTER_ENDPOINT, {
+    const { response, bodyText } = await fetchTextWithHardTimeout(OPENROUTER_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -868,12 +931,16 @@ async function tryGenerateContent(promptText, {
     }, timeoutMs);
 
     if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      console.warn(`[DEEPSEEK_HTTP_ERR] model=${DEEPSEEK_MODEL}, status=${response.status}: ${errText.slice(0, 150)}`);
+      console.warn(`[DEEPSEEK_HTTP_ERR] model=${DEEPSEEK_MODEL}, status=${response.status}: ${bodyText.slice(0, 150)}`);
       throw new HttpError(502, `DeepSeek returned HTTP ${response.status}`);
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      throw new HttpError(502, "DeepSeek returned an invalid API response");
+    }
     const text = data.choices?.[0]?.message?.content;
 
     if (typeof text === "string" && text.trim().length > 0) {
@@ -881,6 +948,8 @@ async function tryGenerateContent(promptText, {
       return text;
     }
 
+    const firstChoice = data.choices?.[0] || {};
+    console.warn(`[DEEPSEEK_EMPTY] finishReason=${firstChoice.finish_reason || "unknown"}, messageKeys=${Object.keys(firstChoice.message || {}).join(",") || "none"}, apiError=${data?.error?.message || "none"}`);
     throw new HttpError(502, "DeepSeek returned an empty response");
   } catch (err) {
     console.warn(`[DEEPSEEK_CALL_FAILED] model=${DEEPSEEK_MODEL}, took ${Date.now() - t0}ms:`, err.message || err);
@@ -1044,6 +1113,8 @@ ${trainingLogsContext}
     userId,
     systemPromptOverride: jsonSystemPrompt,
     maxTokensOverride: 1200,
+    responseFormatOverride: RECOMMENDATIONS_RESPONSE_FORMAT,
+    reasoningOverride: { effort: "none", exclude: true },
   });
   const parsed = safeParseJson(raw);
   const recommendations = normalizeRecommendations(parsed);
@@ -1116,6 +1187,7 @@ export const __testOnly = {
   openRouterEndpoint: OPENROUTER_ENDPOINT,
   getDeepSeekCallType,
   parseDeepSeekJsonObject,
+  fetchTextWithHardTimeout,
   extractChatReply,
   normalizeRecommendations,
   buildChatProfileContext,

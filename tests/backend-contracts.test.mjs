@@ -17,6 +17,7 @@ const {
   openRouterEndpoint,
   getDeepSeekCallType,
   parseDeepSeekJsonObject,
+  fetchTextWithHardTimeout,
   extractChatReply,
   normalizeRecommendations,
   buildChatProfileContext,
@@ -141,9 +142,15 @@ test('chat and insight parsers accept the required DeepSeek JSON contracts even 
     uiAction: null,
   });
   assert.deepEqual(extractChatReply('```json\n{"reply":"תשובה עטופה","updatedPlanHtml":null,"uiAction":null}\n```').reply, 'תשובה עטופה');
+  assert.deepEqual(extractChatReply('תשובה אמיתית וישירה מהמודל'), {
+    reply: 'תשובה אמיתית וישירה מהמודל',
+    updatedPlanHtml: null,
+    uiAction: null,
+  });
+  assert.deepEqual(extractChatReply('{"reply":"שורה ראשונה\\nשורה שנייה","updatedPlanHtml":null,"uiAction":null}').reply, 'שורה ראשונה\nשורה שנייה');
   assert.deepEqual(parseDeepSeekJsonObject('<think>brief internal work</think>\n{"recommendations":[]}'), { recommendations: [] });
   assert.deepEqual(parseDeepSeekJsonObject('<think>{"draft":true}</think>\n{"recommendations":[1,2]}'), { recommendations: [1, 2] });
-  assert.throws(() => extractChatReply('plain text fallback'), (error) => error.statusCode === 502);
+  assert.throws(() => extractChatReply(''), (error) => error.statusCode === 502);
 
   assert.deepEqual(normalizeRecommendations({ recommendations: [
     { type: 'tip', title: 'כותרת 1', text: 'המלצה מפורטת אחת' },
@@ -153,6 +160,26 @@ test('chat and insight parsers accept the required DeepSeek JSON contracts even 
     { type: 'custom', title: 'כותרת יחידה', text: 'תוכן אמיתי מהמודל' },
   ] } }), [{ type: 'tip', title: 'כותרת יחידה', text: 'תוכן אמיתי מהמודל' }]);
   assert.throws(() => normalizeRecommendations({ recommendations: [] }), (error) => error.statusCode === 502);
+});
+
+test('DeepSeek hard timeout covers a slow response body, not only response headers', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      setTimeout(() => {
+        controller.enqueue(new TextEncoder().encode('{"ok":true}'));
+        controller.close();
+      }, 60);
+    },
+  }), { status: 200 });
+  try {
+    await assert.rejects(
+      fetchTextWithHardTimeout('https://example.test', {}, 10),
+      /timed out after 10ms/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('chat context is intentionally bounded and excludes unrelated profile fields', () => {

@@ -962,7 +962,12 @@ function AIChatPanel({ effectiveEmail, effectiveName, onPlanUpdate, onOpenNewPla
       if (res?.uiAction === 'openNewPlanForm') onOpenNewPlanForm();
     } catch (err) {
       setSessions(sessions);
-      setChatError(err?.message || 'השיחה עם DeepSeek נכשלה');
+      setChatInput(userMsg);
+      const rawError = String(err?.message || '');
+      const isInfrastructureError = /AWS|Unable to reach|Internal Server Error|invalid response/i.test(rawError);
+      setChatError(isInfrastructureError
+        ? 'DeepSeek לא החזיר תשובה כרגע. ההודעה נשמרה בשדה כדי שתוכל לנסות שוב.'
+        : (rawError || 'השיחה עם DeepSeek נכשלה'));
     } finally {
       setChatLoading(false);
     }
