@@ -1210,6 +1210,7 @@ function PlanBuilderForm({ generating, onSubmit, onCancel }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (generating) return;
     onSubmit({ age: dAge, gender: dGender, weight: dWeight, height: dHeight, fitnessLevel: dFitnessLevel, goal: dGoal, days: dDays, equipment: dEquipment });
   };
 
@@ -1291,7 +1292,7 @@ function PlanBuilderForm({ generating, onSubmit, onCancel }) {
           )}
         </button>
         {onCancel && (
-          <button type="button" className="btn-plan-cancel" onClick={onCancel}>ביטול</button>
+          <button type="button" className="btn-plan-cancel" onClick={onCancel} disabled={generating}>ביטול</button>
         )}
       </div>
     </form>
@@ -1939,7 +1940,7 @@ export function DashboardPage({ user }) {
             modalMouseDownRef.current = (e.target === e.currentTarget);
           }}
           onClick={(e) => {
-            if (e.target === e.currentTarget && modalMouseDownRef.current) {
+            if (!generating && e.target === e.currentTarget && modalMouseDownRef.current) {
               setShowNewPlanModal(false);
             }
           }}
@@ -1950,7 +1951,13 @@ export function DashboardPage({ user }) {
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
-            <button type="button" className="fm-modal-close" onClick={() => setShowNewPlanModal(false)}>×</button>
+            <button
+              type="button"
+              className="fm-modal-close"
+              onClick={() => setShowNewPlanModal(false)}
+              disabled={generating}
+              aria-label={generating ? 'לא ניתן לסגור בזמן יצירת התוכנית' : 'סגירת החלון'}
+            >×</button>
             <h2 className="fm-modal-title">בקשת תוכנית חדשה</h2>
             <p className="fm-modal-subtitle">עדכן פרטים כדי שה-AI יבנה לך תוכנית חדשה</p>
             <PlanBuilderForm

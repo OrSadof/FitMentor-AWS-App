@@ -2061,9 +2061,16 @@ ul {
   transition: all 0.3s ease;
 }
 
-.btn-plan-cancel:hover {
+.btn-plan-cancel:hover:not(:disabled) {
   border-color: var(--accent-cyan);
   color: var(--accent-cyan);
+}
+
+.btn-plan-cancel:disabled,
+.fm-modal-close:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .btn-spinner {
@@ -3602,7 +3609,7 @@ ul {
   transition: all 0.2s ease;
 }
 
-.fm-modal-close:hover {
+.fm-modal-close:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
   color: #22d3ee;
   border-color: #22d3ee;
