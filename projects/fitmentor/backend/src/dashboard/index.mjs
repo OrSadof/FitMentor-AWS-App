@@ -17,15 +17,15 @@ const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 
-const METRICS_USER_ID = "__METRICS__";
-const METRICS_TOTAL_KEY = "TOTAL";
+const USAGE_METRICS_KEY = "UsageMetrics";
 
-async function incrementMetric(field, by = 1) {
+async function incrementUserMetric(userId, field, by = 1) {
+  const normalizedUserId = String(userId || "").toLowerCase().trim();
   const safeBy = Number(by) || 0;
-  if (!field || safeBy === 0) return;
+  if (!normalizedUserId || !field || safeBy === 0) return;
   await docClient.send(new UpdateCommand({
     TableName: TABLE_NAME,
-    Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY },
+    Key: { UserID: normalizedUserId, DataType: USAGE_METRICS_KEY },
     UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
     ExpressionAttributeNames: { "#f": String(field) },
     ExpressionAttributeValues: { ":zero": 0, ":inc": safeBy, ":now": new Date().toISOString() }
@@ -443,7 +443,7 @@ async function handleGeneratePlan(userId, payload, requestId) {
     const t0 = Date.now();
     try {
       console.log(`[GENERATE_PLAN_ATTEMPT] attempt=${attempt}/${MAX_ATTEMPTS}, reqDays=${reqDays}`);
-      const candidateHtml = await tryGenerateContent(prompt, false);
+      const candidateHtml = await tryGenerateContent(prompt, { userId });
       const htmlLen = String(candidateHtml || '').length;
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, htmlLength=${htmlLen}, dayHeadings=${dayCount}/${reqDays}`);
@@ -612,7 +612,7 @@ ${historyContext ? `4. 📜 היסטוריית תוכניות עבר:\n${history
   const recentHistory = messages.slice(-8).map(m => `${m.role === 'user' ? 'משתמש' : 'AI'}: ${m.text}`).join("\n");
   const fullPrompt = `${systemPrompt}\n\nהיסטוריית שיחה:\n${recentHistory}\n\nמשתמש: ${message}\nAI (JSON):`;
 
-  const rawResponse = await tryGenerateContent(fullPrompt, true);
+  const rawResponse = await tryGenerateContent(fullPrompt, { userId, isChatCall: true });
   const parsedResponse = extractChatReply(rawResponse);
 
   const userMsgObj = { role: "user", text: message, timestamp: Date.now() };
@@ -773,7 +773,12 @@ async function fetchWithHardTimeout(url, options, timeoutMs) {
   }
 }
 
-async function tryGenerateContent(promptText, isChatCall = false, systemPromptOverride = null, maxTokensOverride = null) {
+async function tryGenerateContent(promptText, {
+  userId,
+  isChatCall = false,
+  systemPromptOverride = null,
+  maxTokensOverride = null,
+} = {}) {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "DeepSeek is not configured");
 
   const timeoutMs = isChatCall ? 30000 : (systemPromptOverride ? 25000 : 50000);
@@ -790,7 +795,6 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
 
   try {
     console.log(`[DEEPSEEK_CALL_START] model=${DEEPSEEK_MODEL}, isChatCall=${isChatCall}`);
-    try { await incrementMetric("aiCallsTotal", 1); } catch {}
     const requestPayload = {
       model: DEEPSEEK_MODEL,
       messages: [
@@ -822,6 +826,7 @@ async function tryGenerateContent(promptText, isChatCall = false, systemPromptOv
     const text = data.choices?.[0]?.message?.content;
 
     if (typeof text === "string" && text.trim().length > 0) {
+      try { await incrementUserMetric(userId, "aiCallsTotal", 1); } catch {}
       console.log(`[DEEPSEEK_SUCCESS] model=${DEEPSEEK_MODEL}, took ${Date.now() - t0}ms, responseLen=${text.length}`);
       return text;
     }
@@ -939,7 +944,11 @@ ${trainingLogsContext}
 
   const jsonSystemPrompt = "You are FitMentor AI. Your response must be ONLY a single raw valid JSON object starting with { and ending with }. Decide on the exact count of recommendations to return (between 2 to 4 items). Do not include markdown formatting like ```json or any explanations outside JSON.";
 
-  const raw = await tryGenerateContent(prompt, false, jsonSystemPrompt, 1200);
+  const raw = await tryGenerateContent(prompt, {
+    userId,
+    systemPromptOverride: jsonSystemPrompt,
+    maxTokensOverride: 1200,
+  });
   const parsed = safeParseJson(raw);
   const recommendations = normalizeRecommendations(parsed);
 

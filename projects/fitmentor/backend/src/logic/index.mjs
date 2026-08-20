@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -25,8 +25,7 @@ const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
 const CLIENT_ID = process.env.COGNITO_CLIENT_ID;
 
-const METRICS_USER_ID = "__METRICS__";
-const METRICS_TOTAL_KEY = "TOTAL";
+const USAGE_METRICS_KEY = "UsageMetrics";
 const USER_ACTIVITY_KEY = "UserActivity";
 
 function decodeCognitoTokenPayload(token) {
@@ -96,13 +95,14 @@ function mapCognitoUserToAdminRow(u) {
   };
 }
 
-async function incrementMetric(field, by = 1) {
+async function incrementUserMetric(userId, field, by = 1) {
+  const normalizedUserId = normalizeEmail(userId);
   const safeBy = Number(by) || 0;
-  if (!field || safeBy === 0) return;
+  if (!normalizedUserId || !field || safeBy === 0) return;
 
   await docClient.send(new UpdateCommand({
     TableName: TABLE_NAME,
-    Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY },
+    Key: { UserID: normalizedUserId, DataType: USAGE_METRICS_KEY },
     UpdateExpression: "SET #f = if_not_exists(#f, :zero) + :inc, updatedAt = :now",
     ExpressionAttributeNames: { "#f": String(field) },
     ExpressionAttributeValues: {
@@ -158,30 +158,37 @@ async function scanUserActivityItems() {
   return items;
 }
 
-async function countSavedWorkoutLogs() {
+async function countSavedWorkoutLogs(userIds) {
   let count = 0;
-  let exclusiveStartKey;
-  do {
-    const response = await docClient.send(new ScanCommand({
-      TableName: TABLE_NAME,
-      Select: "COUNT",
-      FilterExpression: "begins_with(#dataType, :prefix)",
-      ExpressionAttributeNames: { "#dataType": "DataType" },
-      ExpressionAttributeValues: { ":prefix": "TrainingLog_" },
-      ExclusiveStartKey: exclusiveStartKey,
-    }));
-    count += Number(response.Count || 0);
-    exclusiveStartKey = response.LastEvaluatedKey;
-  } while (exclusiveStartKey);
+  for (const userId of userIds) {
+    let exclusiveStartKey;
+    do {
+      const response = await docClient.send(new QueryCommand({
+        TableName: TABLE_NAME,
+        Select: "COUNT",
+        KeyConditionExpression: "UserID = :userId AND begins_with(DataType, :prefix)",
+        ExpressionAttributeValues: {
+          ":userId": userId,
+          ":prefix": "TrainingLog_",
+        },
+        ExclusiveStartKey: exclusiveStartKey,
+      }));
+      count += Number(response.Count || 0);
+      exclusiveStartKey = response.LastEvaluatedKey;
+    } while (exclusiveStartKey);
+  }
   return count;
 }
 
-async function getMetricsTotals() {
-  const res = await docClient.send(new GetCommand({
-    TableName: TABLE_NAME,
-    Key: { UserID: METRICS_USER_ID, DataType: METRICS_TOTAL_KEY }
+async function getUserMetricTotal(userIds, field) {
+  const items = await Promise.all([...userIds].map(async (userId) => {
+    const response = await docClient.send(new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { UserID: userId, DataType: USAGE_METRICS_KEY }
+    }));
+    return response?.Item || {};
   }));
-  return res?.Item || {};
+  return items.reduce((total, item) => total + Number(item?.[field] || 0), 0);
 }
 
 async function listAllCognitoUsers(limit = 60) {
@@ -248,17 +255,16 @@ async function handleAdminGetDashboardData(identity, payload = {}) {
         return !isCaller && !isInAdminGroup;
     });
 
-  const [totals, workoutsSavedTotal] = await Promise.all([
-    getMetricsTotals(),
-    countSavedWorkoutLogs(),
-  ]);
-  const aiCallsTotal = Number(totals.aiCallsTotal || 0);
-
   const regularUserIds = new Set(validClientUsers.flatMap((user) => [
     normalizeEmail(user?.email),
     normalizeEmail(user?.username),
   ]).filter(Boolean));
-  const activities = (await scanUserActivityItems())
+  const [workoutsSavedTotal, aiCallsTotal, activityItems] = await Promise.all([
+    countSavedWorkoutLogs(regularUserIds),
+    getUserMetricTotal(regularUserIds, "aiCallsTotal"),
+    scanUserActivityItems(),
+  ]);
+  const activities = activityItems
     .filter((activity) => regularUserIds.has(normalizeEmail(activity?.UserID)));
   const todayUtc = toYmd(new Date());
   const todayIl = toYmdInTimeZone(new Date(), "Asia/Jerusalem");
@@ -534,7 +540,7 @@ export const handler = async (event) => {
 
           try {
             await upsertUserActivity(email, { loginMethod: "DirectAPI" });
-            await incrementMetric("loginSuccessTotal", 1);
+            await incrementUserMetric(email, "loginSuccessTotal", 1);
           } catch {}
 
           responseBody = {
