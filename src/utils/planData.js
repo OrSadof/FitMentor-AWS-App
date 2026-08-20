@@ -26,7 +26,7 @@ export function validateStructuredPlanForDisplay(planData, expectedDays) {
       requireText(exercise?.nameHe, `שם התרגיל בעברית ${exerciseIndex + 1}`);
       requireText(exercise?.nameEn, `שם התרגיל באנגלית ${exerciseIndex + 1}`);
       requireText(exercise?.technique, `דגש הטכניקה ${exerciseIndex + 1}`);
-      requireText(exercise?.progression, `התקדמות העומס ${exerciseIndex + 1}`);
+      requireText(exercise?.progression, `הנחיית ההתקדמות ${exerciseIndex + 1}`);
       if (!Number.isInteger(exercise.repsMin) || !Number.isInteger(exercise.repsMax)
         || exercise.repsMin < 1 || exercise.repsMax > 180 || exercise.repsMin > exercise.repsMax) {
         throw new Error(`טווח התרגיל ${exerciseIndex + 1} אינו מספרי`);
@@ -72,6 +72,8 @@ export function structuredPlanToDisplayDays(planData) {
         ],
         technique: exercise.technique,
         progression: exercise.progression,
+        loadType: exercise.loadType || null,
+        weightBasis: exercise.weightBasis || '',
         extraDetails: [],
         setWeights: [...exercise.weightsKg],
         weightText: '',

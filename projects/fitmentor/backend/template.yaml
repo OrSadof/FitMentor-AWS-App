@@ -175,7 +175,7 @@ Resources:
       FunctionName: FitMentorDashboard
       CodeUri: src/dashboard/
       Handler: index.handler
-      Timeout: 120
+      Timeout: 180
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref FitMentorTable

@@ -111,7 +111,9 @@ function validStructuredPlan(days = 2) {
         repsMax: 12,
         prescriptionUnit: 'repetitions',
         restSeconds: 60,
+        loadType: 'external',
         weightsKg: [30, 27.5, 25],
+        weightBasis: 'המשקלים נשענים על ביצועי האימון האחרון ועל ירידת עומס מתונה בין הסטים.',
         technique: 'שמור על גב ניטרלי, נשימה מבוקרת וטווח תנועה מלא לאורך כל החזרה.',
         progression: 'כאשר כל החזרות נקיות, העלה מעט את המשקל באימון הבא.',
       })),
@@ -193,11 +195,17 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
     fitnessLevel: 'beginner',
     equipment: 'gym',
   });
-  const prompt = buildPlanGenerationPrompt(params);
+  const prompt = buildPlanGenerationPrompt(
+    params,
+    'אימון 1 | תאריך: 2026-08-20\n- לחיצת חזה: סט 1: 40 ק״ג × 10 חזרות; סט 2: 42.5 ק״ג × 9 חזרות',
+  );
   assert.match(prompt, /גיל: 25/);
   assert.match(prompt, /משקל גוף: 70 ק״ג/);
   assert.match(prompt, /גובה: 175 ס״מ/);
   assert.match(prompt, /בדיוק 2 ימי אימון/);
+  assert.match(prompt, /לחיצת חזה: סט 1: 40 ק״ג/);
+  assert.match(prompt, /תן עדיפות לביצועים המתועדים/);
+  assert.match(prompt, /שלושת הערכים החיוביים חייבים להיות שונים זה מזה/);
   assert.match(prompt, /אובייקט JSON יחיד/);
   assert.doesNotMatch(prompt, /<h3>|<div class=/);
   const responseFormat = buildPlanResponseFormat(2);
@@ -206,14 +214,18 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   assert.equal(responseFormat.json_schema.schema.properties.days.minItems, 2);
   assert.equal(responseFormat.json_schema.schema.properties.days.items.properties.exercises.minItems, 3);
   assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('prescriptionUnit'));
+  assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('loadType'));
+  assert.ok(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required.includes('weightBasis'));
 
   const structuredPlan = validStructuredPlan(2);
-  structuredPlan.days[0].exercises[0].nameHe = 'פלאנק עם משקולת';
-  structuredPlan.days[0].exercises[0].nameEn = 'Weighted Plank';
+  structuredPlan.days[0].exercises[0].nameHe = 'פלאנק';
+  structuredPlan.days[0].exercises[0].nameEn = 'Plank';
   structuredPlan.days[0].exercises[0].repsMin = 45;
   structuredPlan.days[0].exercises[0].repsMax = 60;
   structuredPlan.days[0].exercises[0].prescriptionUnit = 'seconds';
+  structuredPlan.days[0].exercises[0].loadType = 'bodyweight';
   structuredPlan.days[0].exercises[0].weightsKg = [0, 0, 0];
+  structuredPlan.days[0].exercises[0].weightBasis = 'ללא עומס חיצוני; ההתקדמות נעשית דרך משך ההחזקה.';
   structuredPlan.days[0].exercises[0].technique = 'קצר';
   structuredPlan.days[0].exercises[0].progression = 'עלה';
   structuredPlan.days[0].exercises[1].weightsKg = [30.125, 27.55, 25.005];
@@ -244,12 +256,34 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
     (error) => error.statusCode === 422,
   );
 
+  const identicalPositiveWeights = validStructuredPlan(2);
+  identicalPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 30];
+  assert.throws(
+    () => validatePlanData(identicalPositiveWeights, params),
+    (error) => error.statusCode === 422 && /repeated/.test(error.message),
+  );
+
+  const partiallyRepeatedPositiveWeights = validStructuredPlan(2);
+  partiallyRepeatedPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 27.5];
+  assert.throws(
+    () => validatePlanData(partiallyRepeatedPositiveWeights, params),
+    (error) => error.statusCode === 422 && /repeated/.test(error.message),
+  );
+
+  const externalWeightOnBodyweightExercise = validStructuredPlan(2);
+  externalWeightOnBodyweightExercise.days[0].exercises[0].loadType = 'bodyweight';
+  assert.throws(
+    () => validatePlanData(externalWeightOnBodyweightExercise, params),
+    (error) => error.statusCode === 422 && /bodyweight/.test(error.message),
+  );
+
   const reversedReps = validStructuredPlan(2);
   reversedReps.days[0].exercises[0].repsMin = 12;
   reversedReps.days[0].exercises[0].repsMax = 8;
-  const preservedReps = validatePlanData(reversedReps, params);
-  assert.equal(preservedReps.days[0].exercises[0].repsMin, 12);
-  assert.equal(preservedReps.days[0].exercises[0].repsMax, 8);
+  assert.throws(
+    () => validatePlanData(reversedReps, params),
+    (error) => error.statusCode === 422,
+  );
 
   const reorderedWeights = validStructuredPlan(2);
   reorderedWeights.days[0].exercises[0].weightsKg = [20, 30, 25];

@@ -394,7 +394,7 @@ function PlanExerciseItem({ ex }) {
           {/* Recommended weight per set — displayed exactly as returned by AI API */}
           {setWeights && (
             <div className="plan-ex-weights">
-              <span className="plan-ex-weights-label">🏋️ משקל מומלץ:</span>
+              <span className="plan-ex-weights-label">🏋️ משקל עבודה מומלץ לכל סט:</span>
               <div className="plan-ex-weights-sets">
                 {setWeights.map((w, i) => (
                   <span key={i} className="plan-ex-weight-set">סט {i + 1} — {w} ק"ג</span>
@@ -406,10 +406,20 @@ function PlanExerciseItem({ ex }) {
           {/* Recommended weight — text description from AI (e.g. "משקל גוף") */}
           {!setWeights && hasWeightText && (
             <div className="plan-ex-weights">
-              <span className="plan-ex-weights-label">🏋️ משקל מומלץ:</span>
+              <span className="plan-ex-weights-label">🏋️ משקל עבודה מומלץ:</span>
               <div className="plan-ex-weights-sets">
                 <span className="plan-ex-weight-set">{ex.weightText}</span>
               </div>
+            </div>
+          )}
+
+          {ex.weightBasis && (
+            <div className="plan-ex-box plan-ex-box--weight">
+              <div className="plan-ex-box-title">
+                <span className="box-icon">🧭</span>
+                <span>למה אלה המשקלים שהומלצו?</span>
+              </div>
+              <p className="plan-ex-box-text">{ex.weightBasis}</p>
             </div>
           )}
 
@@ -429,7 +439,7 @@ function PlanExerciseItem({ ex }) {
             <div className="plan-ex-box plan-ex-box--prog">
               <div className="plan-ex-box-title">
                 <span className="box-icon">📈</span>
-                <span>התקדמות עומס:</span>
+                <span>מתי להעלות משקל או חזרות?</span>
               </div>
               <p className="plan-ex-box-text">{ex.progression}</p>
             </div>
@@ -586,8 +596,9 @@ function PrintablePlan({ name, intro, days }) {
                             <td className="pp-col-num">{j + 1}</td>
                             <td className="pp-col-ex">
                               <div className="pp-ex-name">{ex.title}</div>
+                              {ex.weightBasis && <div className="pp-ex-detail"><span className="pp-detail-tag">בסיס המלצת המשקל</span>{ex.weightBasis}</div>}
                               {ex.technique && <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique}</div>}
-                              {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">התקדמות עומס</span>{ex.progression}</div>}
+                              {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">מתי להעלות משקל או חזרות?</span>{ex.progression}</div>}
                               {ex.extraDetails.map((det, k) => (
                                 <div className="pp-ex-detail" key={k}>{det}</div>
                               ))}
@@ -1429,12 +1440,12 @@ function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight })
       </div>
 
       <div className="editable-text-group">
-        <label className="editable-text-label">📈 התקדמות עומס:</label>
+        <label className="editable-text-label">📈 מתי להעלות משקל או חזרות?</label>
         <textarea
           className="editable-textarea"
           value={ex.progression}
           onChange={(e) => onUpdateField(dIdx, eIdx, 'progression', e.target.value)}
-          placeholder="הנחיות עומס פרוגרסיבי..."
+          placeholder="מתי וכמה להעלות, ומה לעשות אם הטווח לא הושלם..."
         />
       </div>
     </div>
