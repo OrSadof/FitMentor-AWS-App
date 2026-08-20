@@ -16,8 +16,11 @@ const {
   deepSeekModel,
   openRouterEndpoint,
   getDeepSeekCallType,
+  parseDeepSeekJsonObject,
   extractChatReply,
   normalizeRecommendations,
+  buildChatProfileContext,
+  buildChatTrainingContext,
   sanitizeAndValidatePlan,
   validatePlanRequest,
 } = __testOnly;
@@ -131,17 +134,47 @@ test('plan request contract rejects missing or out-of-range profile data', () =>
   assert.throws(() => validatePlanRequest({ age: 5, days: 4 }), (error) => error.statusCode === 400);
 });
 
-test('chat and insight parsers accept only the required DeepSeek JSON contracts', () => {
+test('chat and insight parsers accept the required DeepSeek JSON contracts even when fenced', () => {
   assert.deepEqual(extractChatReply('{"reply":"תשובה אמיתית","updatedPlanHtml":null,"uiAction":null}'), {
     reply: 'תשובה אמיתית',
     updatedPlanHtml: null,
     uiAction: null,
   });
+  assert.deepEqual(extractChatReply('```json\n{"reply":"תשובה עטופה","updatedPlanHtml":null,"uiAction":null}\n```').reply, 'תשובה עטופה');
+  assert.deepEqual(parseDeepSeekJsonObject('<think>brief internal work</think>\n{"recommendations":[]}'), { recommendations: [] });
+  assert.deepEqual(parseDeepSeekJsonObject('<think>{"draft":true}</think>\n{"recommendations":[1,2]}'), { recommendations: [1, 2] });
   assert.throws(() => extractChatReply('plain text fallback'), (error) => error.statusCode === 502);
 
   assert.deepEqual(normalizeRecommendations({ recommendations: [
     { type: 'tip', title: 'כותרת 1', text: 'המלצה מפורטת אחת' },
     { type: 'progression', title: 'כותרת 2', text: 'המלצה מפורטת שנייה' },
   ] }).length, 2);
+  assert.deepEqual(normalizeRecommendations({ recommendations: { items: [
+    { type: 'custom', title: 'כותרת יחידה', text: 'תוכן אמיתי מהמודל' },
+  ] } }), [{ type: 'tip', title: 'כותרת יחידה', text: 'תוכן אמיתי מהמודל' }]);
   assert.throws(() => normalizeRecommendations({ recommendations: [] }), (error) => error.statusCode === 502);
+});
+
+test('chat context is intentionally bounded and excludes unrelated profile fields', () => {
+  const profile = buildChatProfileContext({ age: 30, goal: 'כוח', email: 'private@example.com', secret: 'hidden' });
+  assert.match(profile, /גיל: 30/);
+  assert.match(profile, /מטרה: כוח/);
+  assert.doesNotMatch(profile, /private|hidden|email|secret/i);
+
+  const logs = Array.from({ length: 8 }, (_, index) => ({
+    date: `2026-08-${String(20 - index).padStart(2, '0')}`,
+    data: {
+      exercises: Array.from({ length: 10 }, (__, exerciseIndex) => ({
+        name: `תרגיל ${exerciseIndex + 1}`,
+        sets: Array.from({ length: 7 }, (___, setIndex) => ({ weight: 50 + setIndex, reps: 8 })),
+      })),
+      notes: 'a'.repeat(500),
+    },
+  }));
+  const context = buildChatTrainingContext(logs);
+  assert.match(context, /אימון 5/);
+  assert.doesNotMatch(context, /אימון 6/);
+  assert.match(context, /תרגיל 8/);
+  assert.doesNotMatch(context, /תרגיל 9/);
+  assert.doesNotMatch(context, /סט 6/);
 });

@@ -79,6 +79,22 @@ export function ProgressPage({ user }) {
   const volumeChartInst = useRef(null);
   const balanceChartInst = useRef(null);
 
+  const loadAiInsights = useCallback(async () => {
+    setAiInsightsLoading(true);
+    setAiInsightsError('');
+    try {
+      if (!effectiveEmail) throw new Error('Authentication required');
+      const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30);
+      setAiInsights(insights);
+    } catch (err) {
+      console.error('AI Insights load error:', err);
+      setAiInsights(null);
+      setAiInsightsError('שירות DeepSeek לא החזיר המלצות כרגע. אפשר לנסות שוב בעוד רגע.');
+    } finally {
+      setAiInsightsLoading(false);
+    }
+  }, [effectiveEmail]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setAiInsightsLoading(true);
@@ -93,16 +109,7 @@ export function ProgressPage({ user }) {
       setAchievements(Array.isArray(normalized.achievements) ? normalized.achievements : []);
       setAchievementsLoading(false);
 
-      try {
-        const insights = await fitmentorApi.getAiInsights(effectiveEmail, 30);
-        setAiInsights(insights);
-      } catch (err) {
-        console.error('AI Insights load error:', err);
-        setAiInsights(null);
-        setAiInsightsError(err?.message || 'DeepSeek recommendation analysis failed');
-      } finally {
-        setAiInsightsLoading(false);
-      }
+      await loadAiInsights();
     } catch (err) {
       console.error('Error loading progress:', err);
       setProgressError(err?.message || 'טעינת נתוני ההתקדמות מ-AWS נכשלה');
@@ -113,7 +120,7 @@ export function ProgressPage({ user }) {
     } finally {
       setLoading(false);
     }
-  }, [effectiveEmail]);
+  }, [effectiveEmail, loadAiInsights]);
 
   useEffect(() => {
     loadData();
@@ -1109,8 +1116,11 @@ export function ProgressPage({ user }) {
                   </div>
                 ) : aiInsightsError ? (
                   <div className="rec-item warning" role="alert">
-                    <div className="rec-title">ניתוח DeepSeek נכשל</div>
+                    <div className="rec-title">ניתוח DeepSeek לא זמין כרגע</div>
                     <div className="rec-text">{aiInsightsError}</div>
+                    <button type="button" className="rec-retry-btn" onClick={loadAiInsights}>
+                      נסה שוב
+                    </button>
                   </div>
                 ) : recs.length === 0 ? (
                   <div className="rec-item">

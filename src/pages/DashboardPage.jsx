@@ -616,25 +616,8 @@ function PrintablePlan({ name, intro, days }) {
 function renderMarkdownInline(str) {
   if (!str) return '';
   let formatted = str;
-
-  // 1. Bold text: **text**
   formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong class="chat-bold-highlight">$1</strong>');
-
-  // 2. Italic text: *text*
   formatted = formatted.replace(/\*([^*]+)\*/g, '<em class="chat-italic-highlight">$1</em>');
-
-  // 3. Highlight dates: "ב-3/8", "3/8", "15/08/2026", "2026-08-15"
-  formatted = formatted.replace(/(?:📅\s*)?(?:ב-)?(\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?|\d{4}-\d{2}-\d{2})(?!\d)/g, '<span class="chat-date-pill">📅 $1</span>');
-
-  // 4. Highlight weight stats: "108 ק"ג", "80 קילו", "24kg"
-  formatted = formatted.replace(/(?:💪\s*)?(\d+(?:\.\d+)?\s*(?:ק"ג|ק״ג|קילו|קג|kg|KG))\b/gi, '<span class="chat-stat-pill chat-stat-weight">💪 $1</span>');
-
-  // 5. Highlight reps and sets: "3 חזרות", "8-12 חזרות", "3 סטים", "60 שניות"
-  formatted = formatted.replace(/(?:⚡\s*)?(\d+(?:\s*-\s*\d+)?\s*(?:חזרות|סטים|שניות|דקות|reps|sets))\b/gi, '<span class="chat-stat-pill chat-stat-reps">⚡ $1</span>');
-
-  // 6. Highlight combinations like: "3X8", "3 X 10"
-  formatted = formatted.replace(/(?:🎯\s*)?(\d+\s*[xX✕]\s*\d+)/g, '<span class="chat-stat-pill chat-stat-combo">🎯 $1</span>');
-
   return formatted;
 }
 
@@ -650,20 +633,34 @@ function escapeHtml(value) {
 function formatChatResponseToHtml(text) {
   if (!text) return '';
 
-  let raw = escapeHtml(text);
-  raw = raw.replace(/\s+(#{2,3}\s+)/g, '\n$1');
-  raw = raw.replace(/\s+(---|[*]{3})\s*/g, '\n$1\n');
-  raw = raw.replace(/\s+(\d+[.)])\s+/g, '\n$1 ');
-  raw = raw.replace(/\s+([•\-*])\s+/g, '\n$1 ');
-
-  const lines = raw.split('\n');
+  const lines = escapeHtml(text).replace(/\r\n?/g, '\n').split('\n');
   let htmlResult = '<div class="chat-markdown-container">';
+  let activeList = null;
+
+  const closeList = () => {
+    if (!activeList) return;
+    htmlResult += `</${activeList}>`;
+    activeList = null;
+  };
+
+  const appendListItem = (type, content) => {
+    if (activeList !== type) {
+      closeList();
+      activeList = type;
+      htmlResult += `<${type} class="chat-ai-list chat-ai-list-${type}">`;
+    }
+    htmlResult += `<li>${renderMarkdownInline(content)}</li>`;
+  };
 
   lines.forEach(line => {
     const trimmed = line.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      closeList();
+      return;
+    }
 
     if (/^(---|[*]{3})$/.test(trimmed)) {
+      closeList();
       htmlResult += '<hr class="chat-md-divider" />';
       return;
     }
@@ -672,46 +669,48 @@ function formatChatResponseToHtml(text) {
     const h3Match = trimmed.match(/^###\s+(.*)/);
 
     if (h2Match) {
+      closeList();
       const title = renderMarkdownInline(h2Match[1]);
-      htmlResult += `<h2 class="chat-md-h2"><span>${title}</span></h2>`;
+      htmlResult += `<h2 class="chat-md-h2">${title}</h2>`;
       return;
     }
 
     if (h3Match) {
+      closeList();
       const title = renderMarkdownInline(h3Match[1]);
-      htmlResult += `<h3 class="chat-md-h3"><span>${title}</span></h3>`;
+      htmlResult += `<h3 class="chat-md-h3">${title}</h3>`;
       return;
     }
 
     const quoteMatch = trimmed.match(/^>\s*(.*)/);
     if (quoteMatch) {
+      closeList();
       const quoteContent = renderMarkdownInline(quoteMatch[1]);
-      htmlResult += `<blockquote class="chat-md-blockquote"><div class="chat-blockquote-content">${quoteContent}</div></blockquote>`;
+      htmlResult += `<blockquote class="chat-md-blockquote">${quoteContent}</blockquote>`;
       return;
     }
 
     const numMatch = trimmed.match(/^(\d+)[.)]\s*(.*)/);
     if (numMatch) {
-      const numLabel = numMatch[1];
-      const content = renderMarkdownInline(numMatch[2]);
-      htmlResult += `<div class="chat-list-row"><span class="chat-list-num">${numLabel}.</span><div class="chat-list-content">${content}</div></div>`;
+      appendListItem('ol', numMatch[2]);
       return;
     }
 
     const bulletMatch = trimmed.match(/^([•\-*])\s*(.*)/);
     if (bulletMatch) {
-      const content = renderMarkdownInline(bulletMatch[2]);
-      htmlResult += `<div class="chat-list-row chat-list-subrow"><div class="chat-list-content">${content}</div></div>`;
+      appendListItem('ul', bulletMatch[2]);
       return;
     }
 
+    closeList();
     const content = renderMarkdownInline(trimmed);
     htmlResult += `<p class="chat-ai-paragraph">${content}</p>`;
   });
 
+  closeList();
   htmlResult += '</div>';
   return DOMPurify.sanitize(htmlResult, {
-    ALLOWED_TAGS: ['div', 'h2', 'h3', 'p', 'strong', 'em', 'span', 'blockquote', 'hr'],
+    ALLOWED_TAGS: ['div', 'h2', 'h3', 'p', 'strong', 'em', 'blockquote', 'hr', 'ul', 'ol', 'li'],
     ALLOWED_ATTR: ['class'],
   });
 }
