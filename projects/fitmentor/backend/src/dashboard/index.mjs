@@ -495,7 +495,7 @@ function buildPlanGenerationPrompt(safeParams) {
 2. בחר חלוקה שבועית מאוזנת; אל תאמן אותה קבוצת שריר בעומס גבוה בימים רצופים.
 3. התאם את מורכבות התרגילים, טווחי החזרות, המנוחה והמשקלים לרמת הניסיון, לגיל, למשקל, לגובה, למטרה ולציוד. אל תניח ניסיון שלא נמסר.
 4. weightsKg חייב להכיל בדיוק 3 מספרים לא-שליליים וריאליסטיים בק״ג של עומס חיצוני נוסף, אחד לכל סט. השתמש ב-0 כאשר התרגיל מבוצע במשקל גוף או ללא עומס חיצוני נוסף. אין להשתמש ב-null או בטקסט במקום מספרים.
-5. בתרגיל סטטי או מבוסס זמן (למשל פלאנק), repsMin ו-repsMax מייצגים משך בשניות ויכולים להיות עד 180. בכל תרגיל אחר הם מייצגים מספר חזרות.
+5. prescriptionUnit חייב להיות "seconds" בתרגיל סטטי או מבוסס זמן (למשל פלאנק), ואז repsMin ו-repsMax מייצגים משך בשניות ויכולים להיות עד 180. בכל תרגיל אחר prescriptionUnit חייב להיות "repetitions" והערכים מייצגים מספר חזרות. repsMin חייב להיות קטן או שווה ל-repsMax.
 6. technique חייב להיות הסבר בטיחותי ספציפי לתרגיל בן 1-2 משפטים עם מנח גוף, נשימה וטווח תנועה. progression חייב להסביר מתי וכיצד להתקדם בלי לפגוע בטכניקה.
 7. אין להחזיר HTML, Markdown, הסברים, או נתונים מחוץ לאובייקט JSON.
 
@@ -512,6 +512,7 @@ function buildPlanGenerationPrompt(safeParams) {
           "nameEn": "English Exercise Name",
           "repsMin": 8,
           "repsMax": 12,
+          "prescriptionUnit": "repetitions",
           "restSeconds": 60,
           "weightsKg": [20, 20, 17.5],
           "technique": "הנחיה ספציפית ומלאה",
@@ -552,8 +553,8 @@ async function generateValidatedPlanHtml(userId, safeParams) {
         reasoningOverride: { effort: "none", exclude: true },
         temperatureOverride: 0.15,
       });
-      const normalizedPlanData = normalizeAndValidatePlanData(rawPlanData, safeParams);
-      const candidateHtml = renderPlanHtml(normalizedPlanData, safeParams);
+      const validatedPlanData = validatePlanData(rawPlanData, safeParams);
+      const candidateHtml = renderPlanHtml(validatedPlanData, safeParams);
       const responseLen = String(rawPlanData || '').length;
       const dayCount = countDayHeadings(candidateHtml);
       console.log(`[TRY_GENERATE_CONTENT_DONE] attempt=${attempt}, took ${Date.now() - t0}ms, responseLength=${responseLen}, dayHeadings=${dayCount}/${reqDays}`);
@@ -571,7 +572,7 @@ async function generateValidatedPlanHtml(userId, safeParams) {
   return planHtml;
 }
 
-function normalizeAndValidatePlanData(rawPlanData, safeParams) {
+function validatePlanData(rawPlanData, safeParams) {
   const parsed = typeof rawPlanData === "string"
     ? parseDeepSeekJsonObject(rawPlanData, "DeepSeek returned invalid plan JSON")
     : rawPlanData;
@@ -592,8 +593,8 @@ function normalizeAndValidatePlanData(rawPlanData, safeParams) {
     if (!Number.isInteger(dayNumber) || dayNumber !== dayIndex + 1) {
       throw new HttpError(422, `DeepSeek returned an invalid day number at position ${dayIndex + 1}`);
     }
-    const title = normalizePlanText(rawDay.title, `workout day ${dayNumber} title`, 3, 100);
-    const focus = normalizePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 8, 180);
+    const title = validatePlanText(rawDay.title, `workout day ${dayNumber} title`, 3, 100);
+    const focus = validatePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 8, 180);
     if (!Array.isArray(rawDay.exercises) || rawDay.exercises.length !== 3) {
       throw new HttpError(422, `DeepSeek returned ${Array.isArray(rawDay.exercises) ? rawDay.exercises.length : 0} exercises for workout day ${dayNumber}; exactly 3 are required`);
     }
@@ -603,42 +604,42 @@ function normalizeAndValidatePlanData(rawPlanData, safeParams) {
       if (!rawExercise || typeof rawExercise !== "object" || Array.isArray(rawExercise)) {
         throw new HttpError(422, `DeepSeek returned invalid exercise data for workout day ${dayNumber}`);
       }
-      const modelNameHe = cleanPlanText(rawExercise.nameHe, 100);
-      const modelNameEn = cleanPlanText(rawExercise.nameEn, 100);
-      if (modelNameHe.length < 2 && modelNameEn.length < 2) {
-        throw new HttpError(422, `DeepSeek omitted the exercise name at position ${exerciseIndex + 1} on day ${dayNumber}`);
-      }
-      const nameHe = modelNameHe.length >= 2 ? modelNameHe : modelNameEn;
-      const nameEn = modelNameEn.length >= 2 ? modelNameEn : modelNameHe;
+      const nameHe = validatePlanText(rawExercise.nameHe, `Hebrew exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 2, 100);
+      const nameEn = validatePlanText(rawExercise.nameEn, `English exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 2, 100);
       const exerciseIdentity = `${nameHe}|${nameEn}`.toLowerCase();
       if (exerciseNames.has(exerciseIdentity)) {
         throw new HttpError(422, `DeepSeek duplicated an exercise on workout day ${dayNumber}`);
       }
       exerciseNames.add(exerciseIdentity);
 
-      const rawReps = [Number(rawExercise.repsMin), Number(rawExercise.repsMax)];
-      const restSeconds = Number(rawExercise.restSeconds);
-      if (rawReps.some((value) => !Number.isInteger(value) || value < 1 || value > 180)) {
+      const repsMin = rawExercise.repsMin;
+      const repsMax = rawExercise.repsMax;
+      const prescriptionUnit = rawExercise.prescriptionUnit;
+      const restSeconds = rawExercise.restSeconds;
+      if (![repsMin, repsMax].every((value) => Number.isInteger(value) && value >= 1 && value <= 180) || repsMin > repsMax) {
         console.warn(`[PLAN_REP_VALIDATION_FAILED] exercise=${nameEn}, rawReps=${JSON.stringify([rawExercise.repsMin, rawExercise.repsMax])}`);
         throw new HttpError(422, `DeepSeek returned an invalid repetition range for ${nameHe}`);
       }
-      const [repsMin, repsMax] = rawReps.sort((left, right) => left - right);
-      const prescriptionUnit = isTimedExercise({ nameHe, nameEn }) ? "seconds" : "repetitions";
+      if (prescriptionUnit !== "repetitions" && prescriptionUnit !== "seconds") {
+        throw new HttpError(422, `DeepSeek returned an invalid prescription unit for ${nameHe}`);
+      }
       if (!Number.isInteger(restSeconds) || restSeconds < 30 || restSeconds > 300) {
         throw new HttpError(422, `DeepSeek returned an invalid rest period for ${nameHe}`);
       }
 
       const weightsKg = Array.isArray(rawExercise.weightsKg)
-        ? rawExercise.weightsKg.map(normalizePlanWeight)
+        ? [...rawExercise.weightsKg]
         : [];
-      if (weightsKg.length !== 3 || weightsKg.some((value) => !Number.isFinite(value) || value < 0 || value > 400)) {
+      if (weightsKg.length !== 3 || weightsKg.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 400)) {
         console.warn(`[PLAN_WEIGHT_VALIDATION_FAILED] exercise=${nameEn}, rawWeights=${JSON.stringify(rawExercise.weightsKg)}`);
         throw new HttpError(422, `DeepSeek returned invalid weights for ${nameHe}`);
       }
-      weightsKg.sort((left, right) => right - left);
+      if (!(weightsKg[0] >= weightsKg[1] && weightsKg[1] >= weightsKg[2])) {
+        throw new HttpError(422, `DeepSeek returned weights in the wrong order for ${nameHe}`);
+      }
 
-      const technique = normalizePlanText(rawExercise.technique, `technique instructions for ${nameHe}`, 35, 500);
-      const progression = normalizePlanText(rawExercise.progression, `progression instructions for ${nameHe}`, 25, 400);
+      const technique = validatePlanText(rawExercise.technique, `technique instructions for ${nameHe}`, 35, 500);
+      const progression = validatePlanText(rawExercise.progression, `progression instructions for ${nameHe}`, 25, 400);
       assertExerciseMatchesEquipment({ nameHe, nameEn }, safeParams.equipment);
       return { nameHe, nameEn, repsMin, repsMax, prescriptionUnit, restSeconds, weightsKg, technique, progression };
     });
@@ -651,44 +652,24 @@ function normalizeAndValidatePlanData(rawPlanData, safeParams) {
     throw new HttpError(422, "DeepSeek omitted the required plan tips");
   }
   const tips = {
-    nutrition: normalizePlanText(rawTips.nutrition, "nutrition tip", 20, 400),
-    recovery: normalizePlanText(rawTips.recovery, "recovery tip", 20, 400),
-    sleep: normalizePlanText(rawTips.sleep, "sleep tip", 20, 400),
+    nutrition: validatePlanText(rawTips.nutrition, "nutrition tip", 20, 400),
+    recovery: validatePlanText(rawTips.recovery, "recovery tip", 20, 400),
+    sleep: validatePlanText(rawTips.sleep, "sleep tip", 20, 400),
   };
   return { days, tips };
 }
 
-function normalizePlanText(value, label, minLength, maxLength) {
-  const text = cleanPlanText(value, maxLength);
-  if (text.length < minLength) throw new HttpError(422, `DeepSeek returned invalid ${label}`);
-  return text;
-}
-
-function cleanPlanText(value, maxLength) {
-  if (typeof value !== "string") return "";
-  const withoutControlCharacters = [...value].map((character) => {
+function validatePlanText(value, label, minLength, maxLength) {
+  if (typeof value !== "string") throw new HttpError(422, `DeepSeek omitted ${label}`);
+  const text = value.trim();
+  if (text.length < minLength || text.length > maxLength || /<[^>]*>/.test(text)) {
+    throw new HttpError(422, `DeepSeek returned invalid ${label}`);
+  }
+  for (const character of text) {
     const code = character.charCodeAt(0);
-    return code <= 31 || code === 127 ? " " : character;
-  }).join("");
-  const text = withoutControlCharacters
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return text.length <= maxLength ? text : "";
-}
-
-function normalizePlanWeight(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : Number.NaN;
-  if (typeof value !== "string") return Number.NaN;
-  const text = value.trim().toLowerCase();
-  if (/^(?:body\s*weight|bodyweight|משקל\s*גוף|ללא\s*משקל|ללא\s*עומס)$/.test(text)) return 0;
-  const numericMatch = text.replace(",", ".").match(/^(\d+(?:\.\d+)?)\s*(?:kg|ק[״"']?ג)?$/i);
-  return numericMatch ? Number(numericMatch[1]) : Number.NaN;
-}
-
-function isTimedExercise(exercise) {
-  const text = `${exercise.nameHe} ${exercise.nameEn}`.toLowerCase();
-  return /plank|hold|wall\s*sit|isometric|dead\s*hang|פלאנק|החזקה|סטטי|איזומטר|ישיבת\s*קיר|תלייה/.test(text);
+    if (code <= 31 || code === 127) throw new HttpError(422, `DeepSeek returned invalid ${label}`);
+  }
+  return text;
 }
 
 function assertExerciseMatchesEquipment(exercise, equipment) {
@@ -729,18 +710,13 @@ function renderPlanHtml(planData, safeParams) {
   const daySections = planData.days.map((day) => {
     const exercises = day.exercises.map((exercise) => {
       const weights = exercise.weightsKg.map(formatPlanNumber);
-      const exerciseName = exercise.nameHe === exercise.nameEn
-        ? escapePlanHtml(exercise.nameHe)
-        : `${escapePlanHtml(exercise.nameHe)} (${escapePlanHtml(exercise.nameEn)})`;
+      const exerciseName = `${escapePlanHtml(exercise.nameHe)} (${escapePlanHtml(exercise.nameEn)})`;
       const prescriptionLabel = exercise.prescriptionUnit === "seconds" ? "משך" : "חזרות";
       const prescriptionSuffix = exercise.prescriptionUnit === "seconds" ? "שניות" : "חזרות";
-      const loadNote = exercise.weightsKg.every((weight) => weight === 0)
-        ? " <span>(משקל גוף / ללא עומס חיצוני נוסף)</span>"
-        : "";
       return [
         `<p>🏋️ <strong>${exerciseName}</strong></p>`,
         `<p><strong>סטים:</strong> 3 סטים | <strong>${prescriptionLabel}:</strong> ${exercise.repsMin}-${exercise.repsMax} ${prescriptionSuffix} | <strong>מנוחה:</strong> ${exercise.restSeconds} שניות</p>`,
-        `<p><strong>משקל מומלץ:</strong> סט 1: ${weights[0]} ק״ג | סט 2: ${weights[1]} ק״ג | סט 3: ${weights[2]} ק״ג${loadNote}</p>`,
+        `<p><strong>משקל מומלץ:</strong> סט 1: ${weights[0]} ק״ג | סט 2: ${weights[1]} ק״ג | סט 3: ${weights[2]} ק״ג</p>`,
         `<p><strong>דגש טכניקה:</strong> ${escapePlanHtml(exercise.technique)}</p>`,
         `<p><strong>התקדמות עומס:</strong> ${escapePlanHtml(exercise.progression)}</p>`,
       ].join("");
@@ -762,9 +738,8 @@ function escapePlanHtml(value) {
 
 function formatPlanNumber(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return "0";
-  const rounded = Math.round(number * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  if (!Number.isFinite(number)) throw new HttpError(500, "Invalid numeric plan value");
+  return String(number);
 }
 
 function normalizeUserDisplayName(name) {
@@ -1157,12 +1132,13 @@ function buildPlanResponseFormat(dayCount) {
                   items: {
                     type: "object",
                     additionalProperties: false,
-                    required: ["nameHe", "nameEn", "repsMin", "repsMax", "restSeconds", "weightsKg", "technique", "progression"],
+                    required: ["nameHe", "nameEn", "repsMin", "repsMax", "prescriptionUnit", "restSeconds", "weightsKg", "technique", "progression"],
                     properties: {
                       nameHe: { type: "string", minLength: 2, maxLength: 100 },
                       nameEn: { type: "string", minLength: 2, maxLength: 100 },
                       repsMin: { type: "integer", minimum: 1, maximum: 180 },
                       repsMax: { type: "integer", minimum: 1, maximum: 180 },
+                      prescriptionUnit: { type: "string", enum: ["repetitions", "seconds"] },
                       restSeconds: { type: "integer", minimum: 30, maximum: 300 },
                       weightsKg: {
                         type: "array",
@@ -1548,7 +1524,7 @@ export const __testOnly = {
   validatePlanRequest,
   buildPlanGenerationPrompt,
   buildPlanResponseFormat,
-  normalizeAndValidatePlanData,
+  validatePlanData,
   renderPlanHtml,
   generateValidatedPlanHtml,
 };
