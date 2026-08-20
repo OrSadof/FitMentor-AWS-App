@@ -32,18 +32,16 @@ function validatePlanForDisplay(html, expectedDays) {
     if (exercises.length !== 3) throw new Error(`יום ${dayIndex + 1} אינו כולל בדיוק 3 תרגילים`);
     exercises.forEach((exercise) => {
       const labels = new Set((exercise.statsBadges || []).map((badge) => badge.label));
-      if (!labels.has('סטים') || !labels.has('חזרות') || !labels.has('מנוחה')) {
+      const hasPrescription = labels.has('חזרות') || labels.has('משך');
+      if (!labels.has('סטים') || !hasPrescription || !labels.has('מנוחה')) {
         throw new Error(`חסרים נתוני סטים, חזרות או מנוחה בתרגיל ${exercise.title}`);
       }
       if (!Array.isArray(exercise.setWeights) || exercise.setWeights.length !== 3) {
         throw new Error(`חסרים משקלים מלאים בתרגיל ${exercise.title}`);
       }
       const weights = exercise.setWeights.map(Number);
-      if (weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) {
-        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים להיות מספרים חיוביים`);
-      }
-      if (!(weights[0] >= weights[1] && weights[1] >= weights[2])) {
-        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים לרדת או להישאר זהים בין הסטים`);
+      if (weights.some((weight) => !Number.isFinite(weight) || weight < 0)) {
+        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים להיות מספרים לא-שליליים`);
       }
       if (!exercise.technique || !exercise.progression) {
         throw new Error(`חסרים דגשי טכניקה או התקדמות בתרגיל ${exercise.title}`);
@@ -177,24 +175,15 @@ function parseExercisesFromContent(rawContent) {
     });
 
   const isStatsLine = (line) =>
-    (line.includes('סטים') || line.includes('חזרות') || line.includes('מנוחה')) &&
+    (line.includes('סטים') || line.includes('חזרות') || line.includes('משך') || line.includes('מנוחה')) &&
     !line.includes('העלה') && !line.includes('כשתבצע') && !line.includes('כשאתה') && !line.includes('טכניקה');
 
   const isWeightLine = (line) => line.includes('משקל') || /^weight/i.test(line);
   const isTechLine = (line) =>
-    line.includes('דגש') ||
-    line.includes('טכניקה') ||
-    line.includes('איך מבצעים') ||
-    line.includes('ביצוע') ||
-    line.includes('דגשים') ||
-    line.includes('הנחיות') ||
-    line.includes('הוראות') ||
-    line.includes('טיפ') ||
-    line.includes('מנח') ||
-    line.includes('עמידה') ||
-    line.includes('אחיזה');
+    /^(?:דגש(?:י)?\s*טכניקה|טכניקה|איך\s*מבצעים|הנחיות|הוראות(?:\s*ביצוע)?|טיפ\s*טכני)\s*[:\-–—]/i.test(line);
 
-  const isProgLine = (line) => line.includes('התקדמות') || line.includes('עומס') || line.includes('הסבר');
+  const isProgLine = (line) =>
+    /^(?:התקדמות(?:\s*עומס)?|עומס\s*פרוגרסיבי|הסבר\s*התקדמות)\s*[:\-–—]/i.test(line);
 
   const isDetailLine = (line) =>
     isWeightLine(line) || isTechLine(line) || isProgLine(line) || isStatsLine(line);
@@ -247,6 +236,12 @@ function parseExercisesFromContent(rawContent) {
       }
     }
 
+    const durationMatch = line.match(/משך\s*[:\-–—]?\s*([\d\-–—\s]+(?:שניות|דקות)?)/i);
+    if (durationMatch && !ex.statsBadges.some(b => b.label === 'משך')) {
+      const cleanDuration = durationMatch[1].trim();
+      if (cleanDuration) ex.statsBadges.push({ label: 'משך', val: cleanDuration, type: 'emerald' });
+    }
+
     const mMatch = line.match(/מנוחה\s*[:\-–—]?\s*([\d\-–—\s\w]+(?:שניות|דקות|sec|min)?)/i);
     if (mMatch && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
       ex.statsBadges.push({ label: 'מנוחה', val: mMatch[1].trim(), type: 'purple' });
@@ -261,11 +256,12 @@ function parseExercisesFromContent(rawContent) {
       if (trimmedP.includes('סטים') && !ex.statsBadges.some(b => b.label === 'סטים')) {
         const val = trimmedP.replace(/^.*סטים\s*[:-]?\s*/i, '').trim();
         if (val) ex.statsBadges.push({ label: 'סטים', val, type: 'cyan' });
-      } else if (trimmedP.includes('חזרות') && !ex.statsBadges.some(b => b.label === 'חזרות')) {
-        const val = trimmedP.replace(/^.*חזרות\s*[:-]?\s*/i, '').trim();
+      } else if ((trimmedP.includes('חזרות') || trimmedP.includes('משך')) && !ex.statsBadges.some(b => b.label === 'חזרות' || b.label === 'משך')) {
+        const isDuration = trimmedP.includes('משך');
+        const val = trimmedP.replace(/^.*(?:חזרות|משך)\s*[:-]?\s*/i, '').trim();
         const cleanVal = val.replace(/\s+/g, ' ').replace(/^[\s.,]+|[\s.,]+$/g, '');
         if (cleanVal && !['נקיות', '.', 'נקיות.'].includes(cleanVal)) {
-          ex.statsBadges.push({ label: 'חזרות', val: cleanVal, type: 'emerald' });
+          ex.statsBadges.push({ label: isDuration ? 'משך' : 'חזרות', val: cleanVal, type: 'emerald' });
         }
       } else if (trimmedP.includes('מנוחה') && !ex.statsBadges.some(b => b.label === 'מנוחה')) {
         const val = trimmedP.replace(/^.*מנוחה\s*[:-]?\s*/i, '').trim();
@@ -305,6 +301,16 @@ function parseExercisesFromContent(rawContent) {
       return;
     }
 
+    if (isTechLine(line)) {
+      currentEx.technique = line.replace(/^(?:דגש(?:י)?\s*טכניקה|טכניקה|איך\s*מבצעים|הנחיות|הוראות(?:\s*ביצוע)?|טיפ\s*טכני)\s*[:\-–—]?\s*/i, '').trim();
+      return;
+    }
+
+    if (isProgLine(line)) {
+      currentEx.progression = line.replace(/^(?:התקדמות(?:\s*עומס)?|עומס\s*פרוגרסיבי|הסבר\s*התקדמות)\s*[:\-–—]?\s*/i, '').trim();
+      return;
+    }
+
     if (isWeightLine(line)) {
       if (/משקל\s*גוף/i.test(line) || /body\s*weight/i.test(line)) {
         currentEx.weightText = 'משקל גוף';
@@ -327,16 +333,6 @@ function parseExercisesFromContent(rawContent) {
           }
         }
       }
-      return;
-    }
-
-    if (isTechLine(line)) {
-      currentEx.technique = line.replace(/^.*(?:איך מבצעים(?:\s*ודגשי\s*טכניקה)?|דגשי?\s*טכניקה|טכניקה|דגש|הנחיות|הוראות(?:\s*ביצוע)?|מנח|טיפ(?:\s*טכני)?)\s*[:\-–—]?\s*/i, '').trim();
-      return;
-    }
-
-    if (isProgLine(line)) {
-      currentEx.progression = line.replace(/^.*(?:התקדמות\s*עומס(?:\s*והסבר)?|התקדמות|עומס|הסבר)\s*[:\-–—]?\s*/i, '').trim();
       return;
     }
 
