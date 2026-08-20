@@ -205,10 +205,24 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   assert.equal(responseFormat.json_schema.schema.properties.days.minItems, 2);
   assert.equal(responseFormat.json_schema.schema.properties.days.items.properties.exercises.minItems, 3);
 
-  const normalized = normalizeAndValidatePlanData(JSON.stringify(validStructuredPlan(2)), params);
+  const structuredPlan = validStructuredPlan(2);
+  structuredPlan.days[0].exercises[0].nameHe = '';
+  structuredPlan.days[0].exercises[0].nameEn = 'Weighted Plank';
+  structuredPlan.days[0].exercises[0].repsMin = 60;
+  structuredPlan.days[0].exercises[0].repsMax = 45;
+  structuredPlan.days[0].exercises[0].weightsKg = [0, 0, 0];
+  structuredPlan.days[0].exercises[1].weightsKg = [20, 30, 25];
+  const normalized = normalizeAndValidatePlanData(JSON.stringify(structuredPlan), params);
+  assert.equal(normalized.days[0].exercises[0].nameHe, 'Weighted Plank');
+  assert.equal(normalized.days[0].exercises[0].repsMin, 45);
+  assert.equal(normalized.days[0].exercises[0].repsMax, 60);
+  assert.equal(normalized.days[0].exercises[0].prescriptionUnit, 'seconds');
+  assert.deepEqual(normalized.days[0].exercises[1].weightsKg, [30, 25, 20]);
   const html = renderPlanHtml(normalized, params);
   const validatedHtml = sanitizeAndValidatePlan(html, 2);
   assert.match(validatedHtml, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
+  assert.match(validatedHtml, /משקל גוף \/ ללא עומס חיצוני נוסף/);
+  assert.match(validatedHtml, /<strong>משך:<\/strong> 45-60 שניות/);
   assert.equal((validatedHtml.match(/<h3>/g) || []).length, 2);
   assert.equal((validatedHtml.match(/🏋️/gu) || []).length, 6);
   assert.doesNotMatch(validatedHtml, /undefined|null/);
@@ -217,6 +231,13 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
   wrongDayCount.days.pop();
   assert.throws(
     () => normalizeAndValidatePlanData(wrongDayCount, params),
+    (error) => error.statusCode === 422,
+  );
+
+  const missingWeight = validStructuredPlan(2);
+  missingWeight.days[0].exercises[0].weightsKg = [30, null, 20];
+  assert.throws(
+    () => normalizeAndValidatePlanData(missingWeight, params),
     (error) => error.statusCode === 422,
   );
 });
