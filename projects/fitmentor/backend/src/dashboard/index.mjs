@@ -6,7 +6,7 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCom
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { randomUUID } from "node:crypto";
 import sanitizeHtml from "sanitize-html";
-import { errorResponse, getAuthenticatedIdentity, HttpError } from "./auth.mjs";
+import { errorResponse, getAuthenticatedIdentity, HttpError, requireRegularUser } from "./auth.mjs";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 
@@ -170,6 +170,7 @@ export const handler = async (event) => {
     }
 
     const identity = getAuthenticatedIdentity(event);
+    requireRegularUser(identity);
     if (!event?.body) throw new HttpError(400, "No body provided");
     const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
     const { action, payload = {} } = body || {};

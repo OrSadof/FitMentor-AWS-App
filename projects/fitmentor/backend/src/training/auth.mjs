@@ -37,6 +37,10 @@ export function requireAdmin(identity) {
   if (!identity?.isAdmin) throw new HttpError(403, "Administrator permission required");
 }
 
+export function requireRegularUser(identity) {
+  if (identity?.isAdmin) throw new HttpError(403, "Administrator accounts may only use administrator endpoints");
+}
+
 export function errorResponse(error, headers) {
   const statusCode = Number(error?.statusCode) || 500;
   const message = statusCode >= 500 ? "Internal Server Error" : String(error?.message || "Request failed");

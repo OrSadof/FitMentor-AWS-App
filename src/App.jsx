@@ -882,6 +882,15 @@ function App() {
 
   const isAdmin = checkIsAdminUser();
 
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    if (isAdmin && activeTab !== 'admin') {
+      setActiveTab('admin');
+    } else if (!isAdmin && activeTab === 'admin') {
+      setActiveTab('dashboard');
+    }
+  }, [activeTab, isAdmin, isLoggedIn]);
+
   return (
     <>
       {/* Toast */}
@@ -1054,7 +1063,7 @@ function App() {
         <ProgressPage user={{ email: currentUserEmail, displayName }} />
       )}
 
-      {isLoggedIn && isAdmin && (
+      {isLoggedIn && isAdmin && activeTab === 'admin' && (
         <AdminDashboardPage
           user={{ email: currentUserEmail, displayName, isAdmin }}
           onNavigate={(tab) => setActiveTab(tab)}

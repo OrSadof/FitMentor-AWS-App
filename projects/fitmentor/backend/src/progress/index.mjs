@@ -1,6 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { errorResponse, getAuthenticatedIdentity, HttpError } from "./auth.mjs";
+import { errorResponse, getAuthenticatedIdentity, HttpError, requireRegularUser } from "./auth.mjs";
 
 const TABLE_NAME = process.env.TABLE_NAME || "FitMentorData";
 const client = new DynamoDBClient({});
@@ -17,6 +17,7 @@ export const handler = async (event) => {
 		if (event?.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
 
 		const identity = getAuthenticatedIdentity(event);
+		requireRegularUser(identity);
 		const body = event?.body ? (typeof event.body === "string" ? JSON.parse(event.body) : event.body) : {};
 		const { action, payload = {} } = body || {};
 		if (!action) throw new HttpError(400, "Missing action");

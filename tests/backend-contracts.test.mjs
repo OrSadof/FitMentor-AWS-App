@@ -4,8 +4,13 @@ import assert from 'node:assert/strict';
 import {
   getAuthenticatedIdentity,
   requireAdmin,
+  requireRegularUser,
 } from '../projects/fitmentor/backend/src/dashboard/auth.mjs';
 import { __testOnly } from '../projects/fitmentor/backend/src/dashboard/index.mjs';
+import { handler as dashboardHandler } from '../projects/fitmentor/backend/src/dashboard/index.mjs';
+import { handler as logicHandler } from '../projects/fitmentor/backend/src/logic/index.mjs';
+import { handler as progressHandler } from '../projects/fitmentor/backend/src/progress/index.mjs';
+import { handler as trainingHandler } from '../projects/fitmentor/backend/src/training/index.mjs';
 
 const {
   deepSeekModel,
@@ -64,7 +69,33 @@ test('authenticated identity comes only from API Gateway Cognito claims', () => 
   assert.equal(identity.name, 'Real User');
   assert.equal(identity.isAdmin, true);
   assert.doesNotThrow(() => requireAdmin(identity));
+  assert.throws(() => requireRegularUser(identity), (error) => error.statusCode === 403);
   assert.throws(() => requireAdmin({ isAdmin: false }), (error) => error.statusCode === 403);
+  assert.doesNotThrow(() => requireRegularUser({ isAdmin: false }));
+});
+
+test('administrator and regular-user APIs are mutually exclusive', async () => {
+  const adminClaims = {
+    email: 'admin@example.com',
+    'cognito:groups': '["Admins"]',
+  };
+  const adminEvent = (action) => ({
+    requestContext: { authorizer: { claims: adminClaims } },
+    body: JSON.stringify({ action }),
+  });
+
+  const userEndpointResponses = await Promise.all([
+    dashboardHandler(adminEvent('getPlan')),
+    progressHandler(adminEvent('getProgressData')),
+    trainingHandler(adminEvent('getWorkoutLog')),
+  ]);
+  for (const response of userEndpointResponses) assert.equal(response.statusCode, 403);
+
+  const regularUserAdminResponse = await logicHandler({
+    requestContext: { authorizer: { claims: { email: 'user@example.com' } } },
+    body: JSON.stringify({ action: 'adminGetDashboardData' }),
+  });
+  assert.equal(regularUserAdminResponse.statusCode, 403);
 });
 
 test('plan sanitizer preserves a complete plan and removes executable markup', () => {
