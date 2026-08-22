@@ -41,6 +41,12 @@ export function validateStructuredPlanForDisplay(planData, expectedDays) {
         || exercise.weightsKg.some(weight => typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0 || weight > 400)) {
         throw new Error(`משקלי התרגיל ${exerciseIndex + 1} אינם תקינים`);
       }
+      if (exercise.setStrategy != null && exercise.setStrategy !== 'straight' && exercise.setStrategy !== 'ramp') {
+        throw new Error(`שיטת הסטים בתרגיל ${exerciseIndex + 1} אינה תקינה`);
+      }
+      if (exercise.loadUnit != null && !['total_kg', 'per_hand_kg', 'machine_kg', 'bodyweight'].includes(exercise.loadUnit)) {
+        throw new Error(`יחידת העומס בתרגיל ${exerciseIndex + 1} אינה תקינה`);
+      }
     });
   });
 
@@ -59,6 +65,21 @@ export function structuredPlanToDisplayDays(planData) {
     focus: day.focus,
     exercises: (day.exercises || []).map((exercise) => {
       const isDuration = exercise.prescriptionUnit === 'seconds';
+      const inferredStrategy = exercise.weightsKg[0] === exercise.weightsKg[1]
+        && exercise.weightsKg[1] === exercise.weightsKg[2]
+        ? 'straight'
+        : 'ramp';
+      const setStrategy = exercise.setStrategy || inferredStrategy;
+      const loadUnit = exercise.loadUnit || (exercise.loadType === 'bodyweight' ? 'bodyweight' : 'total_kg');
+      const loadUnitLabel = {
+        total_kg: 'ק״ג סה״כ',
+        per_hand_kg: 'ק״ג לכל יד',
+        machine_kg: 'ק״ג בסימון המכונה',
+        bodyweight: 'משקל גוף',
+      }[loadUnit];
+      const setStrategyLabel = setStrategy === 'ramp'
+        ? 'עלייה הדרגתית — העומס עולה בכוונה בין הסטים'
+        : 'סטים ישרים — אותו עומס נשמר בכוונה בכל שלושת הסטים';
       return {
         title: `${exercise.nameHe} (${exercise.nameEn})`,
         statsBadges: [
@@ -73,6 +94,10 @@ export function structuredPlanToDisplayDays(planData) {
         technique: exercise.technique,
         progression: exercise.progression,
         loadType: exercise.loadType || null,
+        setStrategy,
+        setStrategyLabel,
+        loadUnit,
+        loadUnitLabel,
         extraDetails: [],
         setWeights: [...exercise.weightsKg],
         weightText: '',

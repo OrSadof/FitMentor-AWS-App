@@ -394,12 +394,19 @@ function PlanExerciseItem({ ex }) {
           {/* Recommended weight per set — displayed exactly as returned by AI API */}
           {setWeights && (
             <div className="plan-ex-weights">
-              <span className="plan-ex-weights-label">🏋️ משקל עבודה מומלץ לכל סט:</span>
+              <span className="plan-ex-weights-label">🏋️ עומס פתיחה מוצע לכל סט ({ex.loadUnitLabel || 'ק״ג'}):</span>
               <div className="plan-ex-weights-sets">
                 {setWeights.map((w, i) => (
-                  <span key={i} className="plan-ex-weight-set">סט {i + 1} — {w} ק"ג</span>
+                  <span key={i} className="plan-ex-weight-set">
+                    סט {i + 1} — {ex.loadUnit === 'bodyweight' ? 'משקל גוף' : `${w} ${ex.loadUnitLabel || 'ק״ג'}`}
+                  </span>
                 ))}
               </div>
+              {ex.setStrategyLabel && (
+                <div className="plan-ex-set-strategy">
+                  <strong>שיטת הסטים:</strong> {ex.setStrategyLabel}
+                </div>
+              )}
             </div>
           )}
 
@@ -586,6 +593,7 @@ function PrintablePlan({ name, intro, days }) {
                             <td className="pp-col-num">{j + 1}</td>
                             <td className="pp-col-ex">
                               <div className="pp-ex-name">{ex.title}</div>
+                              {ex.setStrategyLabel && <div className="pp-ex-detail"><span className="pp-detail-tag">שיטת הסטים</span>{ex.setStrategyLabel}</div>}
                               {ex.technique && <div className="pp-ex-detail"><span className="pp-detail-tag">דגש טכניקה</span>{ex.technique}</div>}
                               {ex.progression && <div className="pp-ex-detail"><span className="pp-detail-tag">מתי להעלות משקל או חזרות?</span>{ex.progression}</div>}
                               {ex.extraDetails.map((det, k) => (

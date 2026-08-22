@@ -2859,6 +2859,20 @@ ul {
   gap: 6px;
 }
 
+.plan-ex-set-strategy {
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(251, 191, 36, 0.22);
+  color: #fde68a;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.plan-ex-set-strategy strong {
+  color: #fbbf24;
+}
+
 .plan-ex-weight-set {
   padding: 4px 10px;
   border-radius: 7px;

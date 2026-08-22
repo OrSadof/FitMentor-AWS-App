@@ -22,6 +22,8 @@ function validStructuredPlan() {
             prescriptionUnit: 'seconds',
             restSeconds: 60,
             loadType: 'bodyweight',
+            setStrategy: 'straight',
+            loadUnit: 'bodyweight',
             weightsKg: [0, 0, 0],
             technique: 'שמור על גוף בקו ישר ונשום באופן מבוקר.',
             progression: 'הארך את משך ההחזקה בהדרגה.',
@@ -34,6 +36,8 @@ function validStructuredPlan() {
             prescriptionUnit: 'repetitions',
             restSeconds: 90,
             loadType: 'external',
+            setStrategy: 'ramp',
+            loadUnit: 'per_hand_kg',
             weightsKg: [25.005, 27.55, 30.125],
             technique: 'שמור על שכמות יציבות לאורך כל טווח התנועה.',
             progression: 'העלה עומס לאחר השלמת כל החזרות בטכניקה נקייה.',
@@ -46,7 +50,9 @@ function validStructuredPlan() {
             prescriptionUnit: 'repetitions',
             restSeconds: 75,
             loadType: 'external',
-            weightsKg: [20, 25, 30],
+            setStrategy: 'straight',
+            loadUnit: 'total_kg',
+            weightsKg: [25, 25, 25],
             technique: 'שמור על חזה פתוח וברכיים בקו האצבעות.',
             progression: 'התקדם לפי איכות הביצוע בלי לשנות את סדר הסטים.',
           },
@@ -86,8 +92,12 @@ test('display conversion preserves seconds and API-authored weights exactly', ()
   });
   assert.deepEqual(displayDays[0].exercises[0].setWeights, [0, 0, 0]);
   assert.deepEqual(displayDays[0].exercises[1].setWeights, [25.005, 27.55, 30.125]);
-  assert.deepEqual(displayDays[0].exercises[2].setWeights, [20, 25, 30]);
-  assert.deepEqual(planData.days[0].exercises[2].weightsKg, [20, 25, 30]);
+  assert.equal(displayDays[0].exercises[0].loadUnitLabel, 'משקל גוף');
+  assert.equal(displayDays[0].exercises[1].loadUnitLabel, 'ק״ג לכל יד');
+  assert.match(displayDays[0].exercises[1].setStrategyLabel, /עלייה הדרגתית/);
+  assert.match(displayDays[0].exercises[2].setStrategyLabel, /סטים ישרים/);
+  assert.deepEqual(displayDays[0].exercises[2].setWeights, [25, 25, 25]);
+  assert.deepEqual(planData.days[0].exercises[2].weightsKg, [25, 25, 25]);
 });
 
 test('structured plan validation rejects a day without exactly three exercises', () => {
