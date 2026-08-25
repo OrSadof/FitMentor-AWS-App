@@ -109,7 +109,8 @@ async function claimGenerationRound(userId, requestId, retryRound) {
         ":processing": "processing",
         ":round": retryRound,
         ":claimToken": claimToken,
-        ":claimExpiresAt": nowEpochMs + 135_000,
+        // Two full plan attempts at up to 75s each must stay inside the claim.
+        ":claimExpiresAt": nowEpochMs + 170_000,
         ":nowEpochMs": nowEpochMs,
         ":now": new Date().toISOString(),
       },
@@ -222,7 +223,9 @@ function sanitizeAndValidatePlan(rawHtml, expectedDays) {
       ? headings[index + 1].index
       : safeHtml.search(/<div[^>]+class=["']plan-tips["']/i);
     const section = safeHtml.slice(start, end >= 0 ? end : undefined);
-    const exerciseCount = (section.match(/🏋️/gu) || []).length;
+    // Only emoji-led exercise bullets mark an exercise; an emoji inside a
+    // sentence of accepted DeepSeek prose must never inflate the count.
+    const exerciseCount = (section.match(/<p[^>]*>\s*🏋️/gu) || []).length;
     if (exerciseCount !== 3) {
       throw new HttpError(422, `DeepSeek returned ${exerciseCount} exercises for workout day ${index + 1}; exactly 3 are required`);
     }
@@ -257,8 +260,14 @@ function sanitizeAndValidatePlan(rawHtml, expectedDays) {
       if (/משקל\s*גוף/.test(paragraph[1])) continue;
       const weights = [...paragraph[1].matchAll(/סט\s*[123]\s*:\s*(\d+(?:\.\d+)?)\s*ק["'״]?ג/gi)]
         .map((match) => Number(match[1]));
-      if (weights.length !== 3 || weights.some((weight) => !Number.isFinite(weight) || weight < 0)) {
-        throw new HttpError(422, `DeepSeek returned missing or non-numeric weights for workout day ${index + 1}`);
+      if (weights.length !== 3 || weights.some((weight) => !Number.isInteger(weight) || weight <= 0)) {
+        throw new HttpError(422, `DeepSeek returned missing or non-integer weights for workout day ${index + 1}`);
+      }
+      if (!(weights[0] > weights[1] && weights[1] > weights[2])) {
+        throw new HttpError(422, `DeepSeek returned weights that do not strictly descend for workout day ${index + 1}`);
+      }
+      if (weights[0] - weights[1] > 10 || weights[1] - weights[2] > 10) {
+        throw new HttpError(422, `DeepSeek returned a set-to-set weight drop greater than 10 kg for workout day ${index + 1}`);
       }
     }
   }
@@ -385,7 +394,12 @@ export const handler = async (event) => {
     const identity = getAuthenticatedIdentity(event);
     requireRegularUser(identity);
     if (!event?.body) throw new HttpError(400, "No body provided");
-    const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+    let body;
+    try {
+      body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+    } catch {
+      throw new HttpError(400, "Invalid JSON body");
+    }
     const { action, payload = {} } = body || {};
     if (!action) throw new HttpError(400, "Missing action");
 
@@ -653,9 +667,9 @@ function validatePlanRequest(payload) {
   return { age, weight, height, days, goal, gender, fitnessLevel, equipment };
 }
 
-async function handleGeneratePlan(userId, payload, requestId, retryRound, claimToken, retryReason = "") {
+async function handleGeneratePlan(userId, payload, requestId, retryRound, claimToken, _retryReason = "") {
   const safeParams = validatePlanRequest(payload);
-  const { planHtml, planData } = await generateValidatedPlan(userId, safeParams, retryReason);
+  const { planHtml, planData } = await generateValidatedPlan(userId, safeParams);
   const reqDays = safeParams.days;
   const createdAt = new Date().toISOString();
 
@@ -768,108 +782,6 @@ const EXERCISE_CATALOG = Object.freeze({
   reverse_crunch: { nameHe: "כפיפת אגן הפוכה", nameEn: "Reverse Crunch", equipment: ["gym", "dumbbells", "bodyweight", "minimal"], loadUnits: ["bodyweight"] },
 });
 
-// Opening-load coefficient per exercise: fraction of bodyweight forming the
-// straight-set working load (2-3 reps in reserve) of an intermediate male
-// lifter. `ramp` marks big compounds where a planned small ascent across the
-// three sets is suggested instead of straight sets.
-const LOAD_PROFILE = Object.freeze({
-  barbell_bench_press: { pctOfBodyweight: 0.55, ramp: true },
-  incline_dumbbell_press: { pctOfBodyweight: 0.25 },
-  dumbbell_floor_press: { pctOfBodyweight: 0.22 },
-  push_up: { pctOfBodyweight: 0 },
-  close_grip_push_up: { pctOfBodyweight: 0 },
-  overhead_press: { pctOfBodyweight: 0.38, ramp: true },
-  dumbbell_shoulder_press: { pctOfBodyweight: 0.15 },
-  pike_push_up: { pctOfBodyweight: 0 },
-  dumbbell_lateral_raise: { pctOfBodyweight: 0.07 },
-  triceps_pushdown: { pctOfBodyweight: 0.22 },
-  dumbbell_overhead_triceps_extension: { pctOfBodyweight: 0.12 },
-  pull_up: { pctOfBodyweight: 0 },
-  lat_pulldown: { pctOfBodyweight: 0.55, ramp: true },
-  seated_cable_row: { pctOfBodyweight: 0.5, ramp: true },
-  barbell_row: { pctOfBodyweight: 0.5, ramp: true },
-  one_arm_dumbbell_row: { pctOfBodyweight: 0.26 },
-  dumbbell_bent_over_row: { pctOfBodyweight: 0.2 },
-  reverse_dumbbell_fly: { pctOfBodyweight: 0.06 },
-  face_pull: { pctOfBodyweight: 0.18 },
-  reverse_pec_deck: { pctOfBodyweight: 0.14 },
-  barbell_curl: { pctOfBodyweight: 0.22 },
-  dumbbell_curl: { pctOfBodyweight: 0.11 },
-  hammer_curl: { pctOfBodyweight: 0.11 },
-  prone_y_raise: { pctOfBodyweight: 0 },
-  reverse_snow_angel: { pctOfBodyweight: 0 },
-  back_squat: { pctOfBodyweight: 0.75, ramp: true },
-  goblet_squat: { pctOfBodyweight: 0.28 },
-  bodyweight_squat: { pctOfBodyweight: 0 },
-  dumbbell_split_squat: { pctOfBodyweight: 0.13 },
-  reverse_lunge: { pctOfBodyweight: 0 },
-  dumbbell_walking_lunge: { pctOfBodyweight: 0.13 },
-  romanian_deadlift: { pctOfBodyweight: 0.65, ramp: true },
-  dumbbell_romanian_deadlift: { pctOfBodyweight: 0.22 },
-  conventional_deadlift: { pctOfBodyweight: 0.95, ramp: true },
-  leg_press: { pctOfBodyweight: 1.1, ramp: true },
-  leg_extension: { pctOfBodyweight: 0.32 },
-  lying_leg_curl: { pctOfBodyweight: 0.28 },
-  seated_leg_curl: { pctOfBodyweight: 0.28 },
-  hip_thrust: { pctOfBodyweight: 0.85, ramp: true },
-  dumbbell_hip_thrust: { pctOfBodyweight: 0.3 },
-  glute_bridge: { pctOfBodyweight: 0 },
-  standing_calf_raise: { pctOfBodyweight: 0 },
-  calf_raise_machine: { pctOfBodyweight: 0.45 },
-  plank: { pctOfBodyweight: 0 },
-  side_plank: { pctOfBodyweight: 0 },
-  dead_bug: { pctOfBodyweight: 0 },
-  reverse_crunch: { pctOfBodyweight: 0 },
-});
-
-function getLoadRoundingIncrement(loadUnit, baseLoad) {
-  if (loadUnit === "machine_kg") return 5;
-  return baseLoad < 10 ? 1 : 2.5;
-}
-
-function computeSuggestedLoads(catalogExercise, safeParams) {
-  const loadUnit = catalogExercise.loadUnits[0];
-  if (loadUnit === "bodyweight") {
-    return { loadUnit, weightsKg: [0, 0, 0], setStrategy: "straight", incrementKg: 0 };
-  }
-  const profile = LOAD_PROFILE[catalogExercise.exerciseId] || { pctOfBodyweight: 0 };
-  const levelFactor = { beginner: 0.6, intermediate: 1, advanced: 1.3 }[safeParams.fitnessLevel] ?? 1;
-  const genderFactor = { male: 1, female: 0.72, other: 0.86 }[safeParams.gender] ?? 0.86;
-  const goalFactor = {
-    "חיטוב וירידה במשקל": 0.9,
-    "עלייה במסת שריר": 1,
-    "שיפור כושר כללי": 0.9,
-    "אימוני כוח": 1.1,
-  }[safeParams.goal] ?? 1;
-  const ageFactor = safeParams.age <= 15 || safeParams.age >= 56 ? 0.85 : 1;
-  const baseLoad = profile.pctOfBodyweight * safeParams.weight * levelFactor * genderFactor * goalFactor * ageFactor;
-  const incrementKg = getLoadRoundingIncrement(loadUnit, baseLoad);
-  const openingLoad = Math.max(incrementKg, Math.round(baseLoad / incrementKg) * incrementKg);
-  if (!profile.ramp) {
-    return { loadUnit, weightsKg: [openingLoad, openingLoad, openingLoad], setStrategy: "straight", incrementKg };
-  }
-  const rampStepKg = loadUnit === "machine_kg" ? 5 : 2.5;
-  return {
-    loadUnit,
-    weightsKg: [openingLoad, openingLoad + rampStepKg, openingLoad + 2 * rampStepKg],
-    setStrategy: "ramp",
-    incrementKg,
-  };
-}
-
-function assertWeightsMatchSuggestion(weightsKg, suggestedLoads, nameEn) {
-  const toleranceKg = suggestedLoads.incrementKg > 0 ? suggestedLoads.incrementKg : 0;
-  for (let setIndex = 0; setIndex < 3; setIndex++) {
-    if (Math.abs(weightsKg[setIndex] - suggestedLoads.weightsKg[setIndex]) > toleranceKg + 1e-9) {
-      throw new HttpError(
-        422,
-        `DeepSeek returned ${weightsKg[setIndex]} kg for set ${setIndex + 1} of ${nameEn}`
-          + ` instead of the required opening load ${suggestedLoads.weightsKg.join("/")} kg`,
-      );
-    }
-  }
-}
-
 function getAllowedExerciseCatalog(equipment) {
   return Object.entries(EXERCISE_CATALOG)
     .filter(([, exercise]) => exercise.equipment.includes(equipment))
@@ -891,19 +803,15 @@ function getRequiredTrainingSplit(days, equipment = "gym") {
   }[days];
 }
 
-function getCanonicalDayMeta(days, dayIndex) {
-  const labels = {
-    2: [["גוף מלא A", "רגליים, דחיפה ומשיכה"], ["גוף מלא B", "רגליים, דחיפה ומשיכה בווריאציות שונות"]],
-    3: [["גוף מלא A", "רגליים, דחיפה ומשיכה"], ["גוף מלא B", "רגליים, דחיפה ומשיכה"], ["גוף מלא C", "רגליים, דחיפה ומשיכה"]],
-    4: [["פלג עליון A", "דחיפה ומשיכה מאוזנות"], ["פלג תחתון A", "ברך, ירך ואביזר"], ["פלג עליון B", "דחיפה ומשיכה בווריאציות שונות"], ["פלג תחתון B", "ברך, ירך ואביזר בווריאציות שונות"]],
-    5: [["פלג עליון", "דחיפה ומשיכה מאוזנות"], ["פלג תחתון", "ברך, ירך ואביזר"], ["דחיפה", "חזה, כתפיים ותלת-ראשי"], ["משיכה", "גב, כתף אחורית ודו-ראשי"], ["רגליים", "ברך, ירך ואביזר"]],
-    6: [["דחיפה A", "חזה, כתפיים ותלת-ראשי"], ["משיכה A", "גב, כתף אחורית ודו-ראשי"], ["רגליים A", "ברך, ירך ואביזר"], ["דחיפה B", "חזה, כתפיים ותלת-ראשי בווריאציות שונות"], ["משיכה B", "גב, כתף אחורית ודו-ראשי בווריאציות שונות"], ["רגליים B", "ברך, ירך ואביזר בווריאציות שונות"]],
-  }[days];
-  const [title, focus] = labels[dayIndex];
-  return { title, focus };
-}
+// The full plan is produced by ONE DeepSeek call: the model receives the
+// trainee's mandatory profile and returns the complete weekly program —
+// exercises, day titles/focus, prescriptions, its own prescribed opening
+// loads, technique and progression. The backend never rewrites, recomputes,
+// or second-guesses any accepted value; it only checks structure so the UI
+// can render the result.
+const FULL_PLAN_MAX_ATTEMPTS = 2;
 
-function buildPlanGenerationPrompt(safeParams) {
+function buildFullPlanPrompt(safeParams, validationError = "") {
   const { age, gender, weight, height, fitnessLevel, goal, equipment, days } = safeParams;
   const fitnessDesc = {
     beginner: "מתחיל (0-6 חודשים)",
@@ -919,443 +827,66 @@ function buildPlanGenerationPrompt(safeParams) {
   const genderDesc = { male: "זכר", female: "נקבה", other: "אחר/לא צוין" }[gender];
   const splitGuidance = getRequiredTrainingSplit(days, equipment);
   const allowedExercises = getAllowedExerciseCatalog(equipment)
-    .map((exercise) => `${exercise.exerciseId}: ${exercise.nameHe} (${exercise.nameEn})`)
+    .map((exercise) => `${exercise.exerciseId}: ${exercise.nameHe} (${exercise.nameEn}) [loadUnit: ${exercise.loadUnits.join("|")}]`)
     .join("\n");
+  const retryInstruction = validationError
+    ? `\nהניסיון הקודם לא היה תקין: ${String(validationError).slice(0, 300)}. החזר את מלוא התוכנית מחדש בהתאם לכל הכללים.`
+    : "";
 
-  return `צור מתווה שבועי לתוכנית אימונים אישית בעברית לפי הנתונים המחייבים האלה בלבד:
+  return `צור תוכנית אימונים שבועית אישית ומלאה בעברית לפי הנתונים האישיים המחייבים האלה בלבד:
 גיל=${age}; מגדר=${genderDesc}; משקל=${weight} ק״ג; גובה=${height} ס״מ; רמה=${fitnessDesc}; מטרה=${goal}; ציוד=${equipmentDesc}; ימי אימון=${days}.
 
-החלוקה המחייבת למספר הימים הזה: ${splitGuidance}
+הנחיית החלוקה השבועית המומלצת למספר הימים הזה: ${splitGuidance}
 
-מותר לבחור רק exerciseId מהרשימה הזאת:
+מותר לבחור רק exerciseId מהרשימה הזאת (מותאמת מראש לציוד הזמין):
 ${allowedExercises}
 
 חובה:
-1. החזר בדיוק ${days} ימים — לא פחות ולא יותר — עם dayNumber רציף 1-${days} ובדיוק 3 תרגילים שונים בכל יום.
-2. בנה חלוקת כוח שבועית מקצועית ומאוזנת למטרה, לרמה ולציוד, עם התאוששות סבירה בין אימונים לאותה קבוצת שרירים. ב-${days} ימים חלק את הדחיפה, המשיכה והרגליים באופן עקבי; אל תדחוס כמה תרגילים מורכבים עתירי עייפות לאותו יום.
-3. בחר רק תרגילי התנגדות או משקל גוף מוכרים, יציבים ומתאימים ל-3 סטים. אסור לבחור הליכון, ריצה, אופניים, אליפטיקל, מכונת מדרגות או פעילות אירובית ללא משקל בק״ג. אסור לבחור Snatch, Clean, Jerk, הנפה אולימפית או תרגיל תחרותי טכני שאינו נחוץ למטרה.
-4. לכל יום החזר שלושה exerciseId בלבד. אל תחזיר שמות חופשיים, title, focus, סטים, משקלים, טכניקה או התקדמות; הם יושלמו ויוצגו בשלב הבא.
-5. לפני ההחזרה, ודא בשקט שהחלוקה השבועית תואמת במדויק להנחיית החלוקה ושאין תרגיל כפול באותו יום.
-6. החזר רק JSON שתואם במדויק ל-JSON Schema שסופק. אין HTML, Markdown, נימוקים או טקסט נוסף.`;
+1. החזר בדיוק ${days} ימים — לא פחות ולא יותר — עם dayNumber רציף 1-${days}, ובכל יום בדיוק 3 תרגילים שונים (exerciseId לא חוזר באותו יום).
+2. אתה המאמן: בחר לבד את התרגילים וקבע לבד את כותרת היום (title) ומיקודו (focus) בעברית, כך שהחלוקה השבועית מאוזנת ומקצועית ומותאמת במדויק למטרה, לרמה, לגיל, למין ולמידות הגוף של המתאמן.
+3. לכל תרגיל קבע לבד: טווח חזרות repsMin-repsMax שמתאים למטרה ולרמה, או משך בשניות לתרגילי החזקה (prescriptionUnit=seconds), ומנוחה של 30-300 שניות לפי עצימות התרגיל.
+4. אתה קובע לבד את עומסי הפתיחה (weightsKg) לשלושת הסטים של כל תרגיל — אין ערכים חיצוניים; זהו שיקול דעתך המקצועי בלבד, מנתוני המתאמן: משקל עבודה ריאלי, בטוח ומאתגר עבור הרמה והמין שלו. בתרגיל bodyweight החזר בדיוק [0,0,0] ו-setStrategy=straight. בכל שאר התרגילים החזר רק משקלים שלמים וחיוביים בקילוגרמים, setStrategy=ramp, ובסדר יורד ממש: הסט הראשון הכבד ביותר, הסט השני קל ממנו והסט השלישי הקל ביותר; אסור שמשקלים יהיו שווים, ועד 10 ק״ג הפרש בין כל שני סטים סמוכים. לכל תרגיל ברשימה מופיע סימון [loadUnit: ...] — חובה להחזיר עבור התרגיל שנבחר בדיוק את ה-loadUnit המסומן אצלו, ללא חריגה.
+5. technique: בדיוק שני משפטים עבריים טבעיים ותקניים — הראשון על הכנה, אחיזה וייצוב; השני על מסלול התנועה, הנשימה וטעות בטיחותית אחת שיש להימנע ממנה.
+6. progression: בדיוק שני משפטים עבריים טבעיים — הראשון קובע שמעלים עומס רק לאחר השלמת הערך העליון (repsMax) בכל 3 הסטים בטכניקה נקייה, כולל ציון המספר, היחידה וכמה להוסיף באימון הבא; השני מסביר מה לעשות באימון הבא אם הטווח לא הושלם.
+7. tips: מלא טיפ תזונה, טיפ התאוששות וטיפ שינה, כל אחד 1-2 משפטים עבריים מעשיים.
+8. אסור לבחור הליכון, ריצה, אופניים, אליפטיקל, מכונת מדרגות או פעילות אירובית ללא משקל בק״ג, ואסור לבחור תרגיל מחוץ לרשימה.
+9. החזר רק JSON אחד תקין שתואם במדויק ל-JSON Schema שסופק. אין HTML, Markdown, נימוקים או טקסט נוסף.${retryInstruction}`;
 }
 
-function buildPlanOutlineReviewPrompt(safeParams, outline) {
-  const providerOutline = {
-    days: outline.days.map((day) => ({
-      dayNumber: day.dayNumber,
-      exercises: day.exercises.map((exercise) => ({ exerciseId: exercise.exerciseId })),
-    })),
-    tips: outline.tips,
-  };
-  return `בצע בקרת איכות סופית למתווה האימונים הבא לפני הצגתו למשתמש.
-נתוני המשתמש המחייבים: גיל ${safeParams.age}, מגדר ${safeParams.gender}, משקל ${safeParams.weight} ק״ג, גובה ${safeParams.height} ס״מ, רמה ${safeParams.fitnessLevel}, מטרה ${safeParams.goal}, ציוד ${safeParams.equipment}, ${safeParams.days} ימים.
-החלוקה המחייבת: ${getRequiredTrainingSplit(safeParams.days, safeParams.equipment)}
-
-המתווה לבדיקה:
-${JSON.stringify(providerOutline)}
-
-החזר מתווה מלא ומתוקן באותו JSON Schema. שמור בדיוק ${safeParams.days} ימים ובדיוק 3 exerciseId בכל יום. תקן חלוקה לא מאוזנת, כפילות או תרגיל שאינו מתאים, ובחר רק ID שמותר ב-JSON Schema. אין להוסיף HTML, Markdown או הסבר.`;
-}
-
-function assertExerciseSuitableForGeneralPlan(exercise) {
-  const nameHe = String(exercise?.nameHe || "");
-  const nameEn = String(exercise?.nameEn || "");
-  const combined = `${nameHe} ${nameEn}`.toLowerCase();
-  const forbiddenTechnicalLift = /\b(snatch|clean(?:\s+and\s+jerk)?|jerk)\b|סנאץ|סנואץ|קלין|הנפה אולימפית|דחיקה אולימפית/iu;
-  if (forbiddenTechnicalLift.test(combined)) {
-    throw new HttpError(422, `DeepSeek selected an unsuitable technical lift: ${nameEn || nameHe}`);
-  }
-  if (/מאחורי\s+(?:הראש|הצוואר)/u.test(nameHe)) {
-    throw new HttpError(422, `DeepSeek returned an unsafe or ambiguous Hebrew exercise name for ${nameEn}`);
-  }
-  const lettersHe = nameHe.match(/\p{L}/gu) || [];
-  const hebrewLetters = nameHe.match(/[\u0590-\u05FF]/gu) || [];
-  const lettersEn = nameEn.match(/\p{L}/gu) || [];
-  const latinLetters = nameEn.match(/[A-Za-z]/g) || [];
-  if (lettersHe.length === 0 || hebrewLetters.length / lettersHe.length < 0.7
-    || lettersEn.length === 0 || latinLetters.length / lettersEn.length < 0.7) {
-    throw new HttpError(422, "DeepSeek returned malformed bilingual exercise names");
-  }
-}
-
-function validatePlanOutline(rawOutline, safeParams) {
-  const parsed = typeof rawOutline === "string"
-    ? parseDeepSeekJsonObject(rawOutline, "DeepSeek returned invalid plan outline JSON")
-    : rawOutline;
-  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.days)
-    || parsed.days.length !== safeParams.days) {
-    throw new HttpError(422, `DeepSeek returned an invalid ${safeParams.days}-day outline`);
-  }
-  const days = parsed.days.map((rawDay, dayIndex) => {
-    if (!rawDay || Number(rawDay.dayNumber) !== dayIndex + 1
-      || !Array.isArray(rawDay.exercises) || rawDay.exercises.length !== 3) {
-      throw new HttpError(422, `DeepSeek returned an invalid outline for workout day ${dayIndex + 1}`);
-    }
-    const { title, focus } = getCanonicalDayMeta(safeParams.days, dayIndex);
-    const identities = new Set();
-    const exercises = rawDay.exercises.map((rawExercise, exerciseIndex) => {
-      const exerciseId = String(rawExercise?.exerciseId || rawExercise?.exercise_id || "").trim();
-      const catalogExercise = EXERCISE_CATALOG[exerciseId];
-      if (!catalogExercise || !catalogExercise.equipment.includes(safeParams.equipment)) {
-        throw new HttpError(422, `DeepSeek returned an invalid exercise ID at position ${exerciseIndex + 1} on day ${dayIndex + 1}`);
-      }
-      if (identities.has(exerciseId)) throw new HttpError(422, `DeepSeek duplicated an exercise on day ${dayIndex + 1}`);
-      identities.add(exerciseId);
-      return { exerciseId, ...catalogExercise };
-    });
-    return { dayNumber: dayIndex + 1, title, focus, exercises };
-  });
-  const rawTips = parsed.tips;
-  if (!rawTips || typeof rawTips !== "object" || Array.isArray(rawTips)) {
-    throw new HttpError(422, "DeepSeek omitted the required plan tips");
-  }
-  const tips = {
-    nutrition: validateHebrewInstruction(rawTips.nutrition, "nutrition tip", 8, 35),
-    recovery: validateHebrewInstruction(rawTips.recovery, "recovery tip", 8, 35),
-    sleep: validateHebrewInstruction(rawTips.sleep, "sleep tip", 8, 35),
-  };
-  return { days, tips };
-}
-
-async function generatePlanOutline(userId, safeParams, retryReason = "") {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const retryInstruction = attempt > 1 || retryReason
-        ? `\nהניסיון הקודם נכשל: ${String(lastError?.message || retryReason).slice(0, 300)}. החזר מתווה מלא ומתוקן.`
-        : "";
-      const rawOutline = await tryGenerateContent(`${buildPlanGenerationPrompt(safeParams)}${retryInstruction}`, {
-        userId,
-        maxTokensOverride: 700 + (safeParams.days * 220),
-        timeoutMsOverride: 30000,
-        responseFormatOverride: buildPlanResponseFormat(safeParams.days, safeParams.equipment),
-        reasoningOverride: { effort: "none", exclude: true },
-        temperatureOverride: 0.1,
-      });
-      const initialOutline = validatePlanOutline(rawOutline, safeParams);
-      // The outline review is a balance/quality pass over already-validated
-      // content: if it fails, the validated outline is still usable.
-      try {
-        const rawReviewedOutline = await tryGenerateContent(buildPlanOutlineReviewPrompt(safeParams, initialOutline), {
-          userId,
-          maxTokensOverride: 700 + (safeParams.days * 220),
-          timeoutMsOverride: 30000,
-          responseFormatOverride: buildPlanResponseFormat(safeParams.days, safeParams.equipment),
-          reasoningOverride: { effort: "none", exclude: true },
-          temperatureOverride: 0,
-        });
-        return validatePlanOutline(rawReviewedOutline, safeParams);
-      } catch (reviewError) {
-        console.warn(`[PLAN_OUTLINE_REVIEW_SKIPPED]:`, reviewError?.message || reviewError);
-        return initialOutline;
-      }
-    } catch (error) {
-      lastError = error;
-      console.warn(`[PLAN_OUTLINE_ATTEMPT_FAILED] attempt=${attempt}/2:`, error?.message || error);
-    }
-  }
-  throw lastError || new HttpError(502, "DeepSeek did not return a valid weekly outline");
-}
-
-function buildPlanExercisePrompt(safeParams, outline, day, exercise, exerciseIndex) {
-  const weeklyOutline = outline.days.map((outlineDay) =>
-    `יום ${outlineDay.dayNumber}: ${outlineDay.title} — ${outlineDay.exercises.map((ex) => ex.nameHe).join(", ")}`
-  ).join("\n");
-  const suggestedLoads = computeSuggestedLoads(exercise, safeParams);
-  const weightsGuidance = suggestedLoads.loadUnit === "bodyweight"
-    ? "loadUnit=bodyweight ו-weightsKg=[0,0,0] בדיוק."
-    : `loadUnit=${suggestedLoads.loadUnit}. עומס הפתיחה המחייב שחושב מנתוני המשתמש: סט 1 = ${formatPlanNumber(suggestedLoads.weightsKg[0])} ק״ג, סט 2 = ${formatPlanNumber(suggestedLoads.weightsKg[1])} ק״ג, סט 3 = ${formatPlanNumber(suggestedLoads.weightsKg[2])} ק״ג (${suggestedLoads.setStrategy === "ramp" ? "עלייה הדרגתית מתוכננת בין הסטים" : "סטים ישרים"}). החזר ב-weightsKg את שלושת הערכים האלה במדויק — אסור לשנות אותם.`;
-  const progressionIncrementLabel = suggestedLoads.loadUnit === "bodyweight"
-    ? "תוספת של 5 שניות לכל סט"
-    : `תוספת מדויקת של ${formatPlanNumber(suggestedLoads.incrementKg)} ק״ג`;
-  return `השלם את המרשם המקצועי לתרגיל אחד שכבר נבחר בתוך תוכנית שבועית.
-נתוני המשתמש המחייבים: גיל ${safeParams.age}, מגדר ${safeParams.gender}, משקל ${safeParams.weight} ק״ג, גובה ${safeParams.height} ס״מ, רמה ${safeParams.fitnessLevel}, מטרה ${safeParams.goal}, ציוד ${safeParams.equipment}, ${safeParams.days} ימים בשבוע.
-
-המתווה השבועי להקשר בלבד:
-${weeklyOutline}
-
-התרגיל המחייב: יום ${day.dayNumber}, תרגיל ${exerciseIndex + 1} — ${exercise.nameHe} (${exercise.nameEn}).
-מיקוד היום: ${day.focus}.
-
-כללים:
-1. החזר רק את שדות המרשם לתרגיל הקבוע הזה. אין לבחור או לשנות תרגיל, אין להחזיר שמות ואין להחזיר מערך.
-2. התרגיל כולל בדיוק 3 סטים. ${weightsGuidance}
-3. קבע טווח חזרות או משך בשניות שמתאים לתרגיל, למטרה ולרמה. השתמש ביחידת seconds רק לתרגילי החזקה או תרגילים שנמדדים בזמן, וביחידת repetitions לכל שאר התרגילים.
-4. technique: כתוב בדיוק שני משפטים מלאים, טבעיים, זורמים ותקניים בעברית, 22-45 מילים בסך הכול. המשפט הראשון מסביר כיצד מתכוננים לתרגיל: מנח הגוף, האחיזה והייצוב. המשפט השני מסביר את מסלול התנועה, את הנשימה וטעות בטיחותית אחת שיש להימנע ממנה. אסורים משפטים קטועים, סגנון טלגרפי, מילים באנגלית או עברית משובשת. דוגמה לסגנון הנדרש: "שכב על הספסל כשכפות הרגליים יציבות על הרצפה והשכמות מהודקות אחורה ומטה. הורד את המוט בשליטה עד החזה תוך שאיפה, דחוף מעלה תוך נשיפה, והימנע מקשת מוגזמת של הגב התחתון."
-5. progression: כתוב בדיוק שני משפטים מלאים, טבעיים, זורמים ותקניים בעברית, 20-40 מילים בסך הכול. המשפט הראשון קובע מתי מעלים עומס: רק לאחר השלמת הערך העליון של repsMax שבחרת בכל 3 הסטים בטכניקה נקייה — ציין אותו במפורש (למשל "12 חזרות" או "45 שניות"), וציין את ${progressionIncrementLabel} לאימון הבא. המשפט השני מסביר מה לעשות באימון הבא אם הטווח לא הושלם. אסור להציע שינוי משקל בין הסטים של האימון הנוכחי או לכתוב "לסט הבא". דוגמה לסגנון הנדרש: "כאשר אתה משלים 12 חזרות בטכניקה נקייה בכל שלושת הסטים, הוסף 2.5 ק״ג באימון הבא. אם אינך משלים את הטווח, שמור על אותו עומס וחזור עליו באימון הבא."
-6. החזר אובייקט JSON יחיד שתואם במדויק ל-JSON Schema, בלי HTML, Markdown, נימוקים או טקסט נוסף.`;
-}
-
-function buildPlanExerciseLanguageReviewPrompt(safeParams, day, originalDetails) {
-  const loadMeaning = {
-    total_kg: "כל ערך משקל הוא העומס הכולל; כל תוספת בק״ג חייבת להתייחס לעומס הכולל ולא לכל צד",
-    per_hand_kg: "כל ערך משקל הוא לכל יד; ציין זאת במפורש כאשר התוספת היא לכל יד",
-    machine_kg: "כל ערך משקל הוא סימון העומס במכונה",
-    bodyweight: "העומס הנוכחי הוא משקל גוף ללא משקל חיצוני",
-  }[originalDetails.loadUnit];
-  const prescriptionMeaning = originalDetails.prescriptionUnit === "seconds" ? "שניות" : "חזרות";
-  return `פעל כעורך עברית מקצועי וכמאמן כוח לבקרת איכות סופית של תרגיל אחד.
-נתוני המשתמש: גיל ${safeParams.age}, משקל ${safeParams.weight} ק״ג, גובה ${safeParams.height} ס״מ, רמה ${safeParams.fitnessLevel}, מטרה ${safeParams.goal}. יום האימון: ${day.title}; מיקוד: ${day.focus}.
-
-המרשם שכבר נוצר ב-DeepSeek:
-${JSON.stringify(originalDetails)}
-
-החזר רק technique ו-progression. אל תשנה את התרגיל ואל תמציא נתונים מספריים חדשים. תקן כל שגיאת כתיב, דקדוק, מונח אנטומי או ניסוח לא טבעי.
-חובה: אל תקצר את הטקסט. technique נשאר שני משפטים מלאים, זורמים ותקניים של 22-45 מילים, ו-progression נשאר שני משפטים מלאים של 20-40 מילים. שמור על כל המספרים הקיימים בדיוק כפי שהם.
-technique חייב להיות הסבר עברי טבעי, ברור ובטיחותי. progression חייב לציין שהעומס עולה רק אחרי ${originalDetails.repsMax} ${prescriptionMeaning} בכל 3 הסטים, את התוספת המדויקת שכבר הוצעה באימון הבא, ומה עושים אם היעד לא הושלם. ${loadMeaning}. אסור לכתוב "לסט הבא", אסור להציע שינוי משקל בין הסטים, ואין HTML, Markdown או הסבר נוסף.`;
-}
-
-function parseStrictProviderNumber(value, label, { integer = false } = {}) {
-  let parsed = value;
-  if (typeof value === "string") {
-    const normalized = value.trim();
-    const numberPattern = integer ? /^\d+$/u : /^\d+(?:\.\d+)?$/u;
-    if (!numberPattern.test(normalized)) {
-      throw new HttpError(422, `DeepSeek returned invalid ${label}`);
-    }
-    parsed = Number(normalized);
-  }
-  if (typeof parsed !== "number" || !Number.isFinite(parsed) || (integer && !Number.isInteger(parsed))) {
-    throw new HttpError(422, `DeepSeek returned invalid ${label}`);
-  }
-  return parsed;
-}
-
-function firstProviderValue(source, keys) {
-  for (const key of keys) {
-    if (source?.[key] !== undefined && source[key] !== null) return source[key];
-  }
-  return undefined;
-}
-
-function normalizeProviderEnum(value, aliases, label) {
-  if (typeof value !== "string") throw new HttpError(422, `DeepSeek omitted ${label}`);
-  const normalized = value.trim().toLowerCase().replace(/[\s-]+/gu, "_");
-  const canonical = aliases.get(normalized);
-  if (!canonical) throw new HttpError(422, `DeepSeek returned invalid ${label}`);
-  return canonical;
-}
-
-function extractProviderExerciseDetails(parsed) {
-  if (Array.isArray(parsed)) return parsed;
-  const candidates = [
-    parsed?.exercises,
-    parsed?.day?.exercises,
-    parsed?.workoutDay?.exercises,
-    parsed?.workout_day?.exercises,
-    parsed?.workout?.exercises,
-    parsed?.data?.exercises,
-    parsed?.days?.[0]?.exercises,
-    parsed?.plan?.days?.[0]?.exercises,
-  ];
-  return candidates.find(Array.isArray);
-}
-
-const PRESCRIPTION_UNIT_ALIASES = new Map([
-  ["repetitions", "repetitions"], ["repetition", "repetitions"], ["reps", "repetitions"], ["rep", "repetitions"], ["חזרות", "repetitions"],
-  ["seconds", "seconds"], ["second", "seconds"], ["time", "seconds"], ["duration", "seconds"], ["שניות", "seconds"],
-]);
-const LOAD_UNIT_ALIASES = new Map([
-  ["total_kg", "total_kg"], ["total", "total_kg"], ["kg_total", "total_kg"], ["overall_kg", "total_kg"],
-  ["per_hand_kg", "per_hand_kg"], ["per_hand", "per_hand_kg"], ["each_hand", "per_hand_kg"], ["each_hand_kg", "per_hand_kg"],
-  ["machine_kg", "machine_kg"], ["machine", "machine_kg"],
-  ["bodyweight", "bodyweight"], ["body_weight", "bodyweight"], ["bodyweight_only", "bodyweight"], ["משקל_גוף", "bodyweight"],
-]);
-
-function normalizeProviderExerciseDetail(rawExercise, exerciseIndex, dayNumber) {
-  if (!rawExercise || typeof rawExercise !== "object" || Array.isArray(rawExercise)) {
-    throw new HttpError(422, `DeepSeek returned invalid exercise details on workout day ${dayNumber}`);
-  }
-  const rawIndex = firstProviderValue(rawExercise, ["exerciseIndex", "exercise_index", "index"]);
-  if (rawIndex !== undefined && parseStrictProviderNumber(rawIndex, "exercise index", { integer: true }) !== exerciseIndex + 1) {
-    throw new HttpError(422, `DeepSeek returned the wrong exercise index on workout day ${dayNumber}`);
-  }
-  const rawWeights = firstProviderValue(rawExercise, ["weightsKg", "weights_kg", "weights"]);
-  if (!Array.isArray(rawWeights)) throw new HttpError(422, "DeepSeek omitted working-set weights");
-  return {
-    exerciseIndex: exerciseIndex + 1,
-    nameHe: firstProviderValue(rawExercise, ["nameHe", "name_he", "hebrewName", "hebrew_name"]),
-    nameEn: firstProviderValue(rawExercise, ["nameEn", "name_en", "englishName", "english_name"]),
-    repsMin: parseStrictProviderNumber(firstProviderValue(rawExercise, ["repsMin", "reps_min"]), "minimum repetitions", { integer: true }),
-    repsMax: parseStrictProviderNumber(firstProviderValue(rawExercise, ["repsMax", "reps_max"]), "maximum repetitions", { integer: true }),
-    prescriptionUnit: normalizeProviderEnum(
-      firstProviderValue(rawExercise, ["prescriptionUnit", "prescription_unit", "unit"]),
-      PRESCRIPTION_UNIT_ALIASES,
-      "prescription unit",
-    ),
-    restSeconds: parseStrictProviderNumber(firstProviderValue(rawExercise, ["restSeconds", "rest_seconds", "rest"]), "rest period", { integer: true }),
-    loadUnit: normalizeProviderEnum(
-      firstProviderValue(rawExercise, ["loadUnit", "load_unit", "weightUnit", "weight_unit"]),
-      LOAD_UNIT_ALIASES,
-      "load unit",
-    ),
-    weightsKg: rawWeights.map((value) => parseStrictProviderNumber(value, "working-set weight")),
-    technique: firstProviderValue(rawExercise, ["technique", "techniqueInstructions", "technique_instructions"]),
-    progression: firstProviderValue(rawExercise, ["progression", "progressionInstructions", "progression_instructions"]),
-  };
-}
-
-function normalizePlanDayDetails(parsed, dayNumber = 1) {
-  const exercises = extractProviderExerciseDetails(parsed);
-  if (!Array.isArray(exercises) || exercises.length !== 3) {
-    const rootKeys = parsed && typeof parsed === "object" ? Object.keys(parsed).slice(0, 12).join(",") : typeof parsed;
-    console.warn(`[PLAN_DAY_SHAPE_FAILED] day=${dayNumber}, rootKeys=${rootKeys || "none"}`);
-    throw new HttpError(422, `DeepSeek returned invalid details for workout day ${dayNumber}`);
-  }
-  return exercises.map((exercise, index) => normalizeProviderExerciseDetail(exercise, index, dayNumber));
-}
-
-function extractProviderSingleExerciseDetail(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const hasDetailField = ["repsMin", "reps_min", "weightsKg", "weights_kg", "technique", "techniqueInstructions"]
-    .some((key) => parsed[key] !== undefined);
-  if (hasDetailField) return parsed;
-  const candidates = [
-    parsed.exercise,
-    parsed.details,
-    parsed.data,
-    parsed.workoutExercise,
-    parsed.workout_exercise,
-    Array.isArray(parsed.exercises) && parsed.exercises.length === 1 ? parsed.exercises[0] : null,
-  ];
-  return candidates.find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)) || null;
-}
-
-function normalizePlanExerciseDetails(parsed, exerciseIndex, dayNumber) {
-  const exercise = extractProviderSingleExerciseDetail(parsed);
-  if (!exercise) {
-    const rootKeys = parsed && typeof parsed === "object" ? Object.keys(parsed).slice(0, 12).join(",") : typeof parsed;
-    console.warn(`[PLAN_EXERCISE_SHAPE_FAILED] day=${dayNumber}, exercise=${exerciseIndex + 1}, rootKeys=${rootKeys || "none"}`);
-    throw new HttpError(422, `DeepSeek returned invalid details for exercise ${exerciseIndex + 1} on workout day ${dayNumber}`);
-  }
-  return normalizeProviderExerciseDetail(exercise, exerciseIndex, dayNumber);
-}
-
-// The language-review contract returns only technique/progression. Merge them
-// over the already-validated details without ever touching the catalog names.
-function mergeReviewedExerciseLanguage(validatedDetails, reviewedLanguage) {
-  const reviewedTechnique = firstProviderValue(reviewedLanguage, ["technique", "techniqueInstructions", "technique_instructions"]);
-  const reviewedProgression = firstProviderValue(reviewedLanguage, ["progression", "progressionInstructions", "progression_instructions"]);
-  return {
-    ...validatedDetails,
-    ...(typeof reviewedTechnique === "string" && reviewedTechnique.trim() ? { technique: reviewedTechnique } : {}),
-    ...(typeof reviewedProgression === "string" && reviewedProgression.trim() ? { progression: reviewedProgression } : {}),
-  };
-}
-
-function validateGeneratedExerciseDetails(details, safeParams, outline, day, exerciseIndex) {
-  const validationExercises = day.exercises.map((outlineExercise, index) => ({
-    ...details,
-    ...(index === exerciseIndex
-      ? { nameHe: details.nameHe, nameEn: details.nameEn }
-      : outlineExercise),
-  }));
-  const validated = validatePlanData({
-    days: [{ dayNumber: 1, title: day.title, focus: day.focus, exercises: validationExercises }],
-    tips: outline.tips,
-  }, { ...safeParams, days: 1 });
-  return validated.days[0].exercises[exerciseIndex];
-}
-
-async function generatePlanExerciseDetails(userId, safeParams, outline, day, exercise, exerciseIndex) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const retryInstruction = attempt > 1
-        ? `\nהניסיון הקודם נכשל: ${String(lastError?.message || "invalid exercise details").slice(0, 300)}. החזר מחדש אובייקט מלא ומתוקן לתרגיל היחיד.`
-        : "";
-      const rawDetails = await tryGenerateContent(`${buildPlanExercisePrompt(safeParams, outline, day, exercise, exerciseIndex)}${retryInstruction}`, {
-        userId,
-        maxTokensOverride: 1000,
-        timeoutMsOverride: 25000,
-        responseFormatOverride: buildPlanDayResponseFormat(),
-        reasoningOverride: { effort: "none", exclude: true },
-        temperatureOverride: 0.1,
-      });
-      const parsed = typeof rawDetails === "string"
-        ? parseDeepSeekJsonObject(rawDetails, "DeepSeek returned invalid exercise-details JSON")
-        : rawDetails;
-      const normalizedDetails = normalizePlanExerciseDetails(parsed, exerciseIndex, day.dayNumber);
-      assertWeightsMatchSuggestion(
-        normalizedDetails.weightsKg,
-        computeSuggestedLoads(exercise, safeParams),
-        normalizedDetails.nameEn,
-      );
-      const validatedDetails = validateGeneratedExerciseDetails(normalizedDetails, safeParams, outline, day, exerciseIndex);
-      // The language review is a polish pass over already-validated content:
-      // a failed or incomplete review must never fail the exercise.
-      let reviewedDetails = validatedDetails;
-      try {
-        const rawLanguageReview = await tryGenerateContent(
-          buildPlanExerciseLanguageReviewPrompt(safeParams, day, validatedDetails),
-          {
-            userId,
-            maxTokensOverride: 750,
-            timeoutMsOverride: 25000,
-            responseFormatOverride: buildPlanExerciseLanguageReviewResponseFormat(),
-            reasoningOverride: { effort: "none", exclude: true },
-            temperatureOverride: 0,
-          },
-        );
-        const reviewedLanguage = typeof rawLanguageReview === "string"
-          ? parseDeepSeekJsonObject(rawLanguageReview, "DeepSeek returned invalid exercise language review JSON")
-          : rawLanguageReview;
-        reviewedDetails = mergeReviewedExerciseLanguage(validatedDetails, reviewedLanguage);
-      } catch (reviewError) {
-        console.warn(`[PLAN_EXERCISE_REVIEW_SKIPPED] day=${day.dayNumber}, exercise=${exerciseIndex + 1}:`, reviewError?.message || reviewError);
-      }
-      return validateGeneratedExerciseDetails(reviewedDetails, safeParams, outline, day, exerciseIndex);
-    } catch (error) {
-      lastError = error;
-      console.warn(`[PLAN_EXERCISE_ATTEMPT_FAILED] day=${day.dayNumber}, exercise=${exerciseIndex + 1}, attempt=${attempt}/3:`, error?.message || error);
-    }
-  }
-  throw lastError || new HttpError(502, `DeepSeek did not return valid details for exercise ${exerciseIndex + 1} on workout day ${day.dayNumber}`);
-}
-
-async function mapWithConcurrency(items, concurrency, mapper) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  async function worker() {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await mapper(items[index], index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-  return results;
-}
-
-async function generateValidatedPlan(userId, safeParams, retryReason = "") {
+async function generateValidatedPlan(userId, safeParams) {
   const startedAt = Date.now();
-  console.log(`[GENERATE_PLAN_START] reqDays=${safeParams.days}, userId=${userId}, mode=outline-plus-exercises`);
-  const outline = await generatePlanOutline(userId, safeParams, retryReason);
-  const exerciseTasks = outline.days.flatMap((day) => day.exercises.map((exercise, exerciseIndex) => ({
-    day,
-    exercise,
-    exerciseIndex,
-  })));
-  const generatedExercises = await mapWithConcurrency(exerciseTasks, 6, ({ day, exercise, exerciseIndex }) =>
-    generatePlanExerciseDetails(userId, safeParams, outline, day, exercise, exerciseIndex)
-  );
-  const detailedExercises = outline.days.map((day, dayIndex) =>
-    generatedExercises.slice(dayIndex * day.exercises.length, (dayIndex + 1) * day.exercises.length)
-  );
-  const assembledPlan = {
-    days: outline.days.map((day, index) => ({ ...day, exercises: detailedExercises[index] })),
-    tips: outline.tips,
-  };
-  const planData = validatePlanData(assembledPlan, safeParams);
-  const candidateHtml = renderPlanHtml(planData, safeParams);
-  const planHtml = sanitizeAndValidatePlan(candidateHtml, safeParams.days);
-  console.log(`[PLAN_VALIDATION_SUCCESS] mode=outline-plus-exercises, took=${Date.now() - startedAt}ms, reqDays=${safeParams.days}`);
-  return { planHtml, planData };
+  console.log(`[GENERATE_PLAN_START] reqDays=${safeParams.days}, userId=${userId}, mode=single-full-plan`);
+  let lastError = null;
+  for (let attempt = 1; attempt <= FULL_PLAN_MAX_ATTEMPTS; attempt++) {
+    try {
+      const rawPlan = await tryGenerateContent(buildFullPlanPrompt(safeParams, lastError?.message || ""), {
+        userId,
+        maxTokensOverride: Math.min(MAX_OUTPUT_TOKENS, 1800 + (safeParams.days * 1250)),
+        timeoutMsOverride: 75000,
+        responseFormatOverride: buildFullPlanResponseFormat(safeParams.days, safeParams.equipment),
+        reasoningOverride: { effort: "none", exclude: true },
+        temperatureOverride: 0.3,
+      });
+      const parsed = parseDeepSeekJsonObject(rawPlan, "DeepSeek returned invalid plan JSON");
+      const planData = validatePlanData(parsed, safeParams);
+      const planHtml = sanitizeAndValidatePlan(renderPlanHtml(planData, safeParams), safeParams.days);
+      console.log(`[PLAN_VALIDATION_SUCCESS] mode=single-full-plan, took=${Date.now() - startedAt}ms, reqDays=${safeParams.days}, attempt=${attempt}`);
+      return { planHtml, planData };
+    } catch (error) {
+      lastError = error;
+      console.warn(`[FULL_PLAN_ATTEMPT_FAILED] attempt=${attempt}/${FULL_PLAN_MAX_ATTEMPTS}:`, error?.message || error);
+    }
+  }
+  throw lastError || new HttpError(502, "DeepSeek did not return a valid workout plan");
 }
 
 async function generateValidatedPlanHtml(userId, safeParams) {
   return (await generateValidatedPlan(userId, safeParams)).planHtml;
 }
 
+// Structural validation only. Every accepted value below comes verbatim from
+// DeepSeek: names are joined from the catalog entry the model selected by
+// exerciseId, and nothing else is altered, recomputed, or re-phrased.
 function validatePlanData(rawPlanData, safeParams) {
   const parsed = typeof rawPlanData === "string"
     ? parseDeepSeekJsonObject(rawPlanData, "DeepSeek returned invalid plan JSON")
@@ -1369,6 +900,10 @@ function validatePlanData(rawPlanData, safeParams) {
     throw new HttpError(422, `DeepSeek returned ${Array.isArray(rawDays) ? rawDays.length : 0} of ${safeParams.days} required workout days`);
   }
 
+  const allowedCatalog = new Map(
+    getAllowedExerciseCatalog(safeParams.equipment).map((exercise) => [exercise.exerciseId, exercise]),
+  );
+
   const days = rawDays.map((rawDay, dayIndex) => {
     if (!rawDay || typeof rawDay !== "object" || Array.isArray(rawDay)) {
       throw new HttpError(422, `DeepSeek returned invalid data for workout day ${dayIndex + 1}`);
@@ -1377,24 +912,26 @@ function validatePlanData(rawPlanData, safeParams) {
     if (!Number.isInteger(dayNumber) || dayNumber !== dayIndex + 1) {
       throw new HttpError(422, `DeepSeek returned an invalid day number at position ${dayIndex + 1}`);
     }
-    const title = validatePlanText(rawDay.title, `workout day ${dayNumber} title`, 1, 100);
-    const focus = validatePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 1, 160);
+    const title = validatePlanText(rawDay.title, `workout day ${dayNumber} title`, 2, 100);
+    const focus = validatePlanText(rawDay.focus, `workout day ${dayNumber} focus`, 2, 160);
     if (!Array.isArray(rawDay.exercises) || rawDay.exercises.length !== 3) {
       throw new HttpError(422, `DeepSeek returned ${Array.isArray(rawDay.exercises) ? rawDay.exercises.length : 0} exercises for workout day ${dayNumber}; exactly 3 are required`);
     }
 
-    const exerciseNames = new Set();
+    const dayExerciseIds = new Set();
     const exercises = rawDay.exercises.map((rawExercise, exerciseIndex) => {
       if (!rawExercise || typeof rawExercise !== "object" || Array.isArray(rawExercise)) {
         throw new HttpError(422, `DeepSeek returned invalid exercise data for workout day ${dayNumber}`);
       }
-      const nameHe = validatePlanText(rawExercise.nameHe, `Hebrew exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 1, 80);
-      const nameEn = validatePlanText(rawExercise.nameEn, `English exercise name ${exerciseIndex + 1} on day ${dayNumber}`, 1, 80);
-      const exerciseIdentity = `${nameHe}|${nameEn}`.toLowerCase();
-      if (exerciseNames.has(exerciseIdentity)) {
-        throw new HttpError(422, `DeepSeek duplicated an exercise on workout day ${dayNumber}`);
+      const exerciseId = String(rawExercise.exerciseId || "").trim();
+      const catalogExercise = allowedCatalog.get(exerciseId);
+      if (!catalogExercise) {
+        throw new HttpError(422, `DeepSeek selected an unavailable exercise at position ${exerciseIndex + 1} on day ${dayNumber}`);
       }
-      exerciseNames.add(exerciseIdentity);
+      if (dayExerciseIds.has(exerciseId)) {
+        throw new HttpError(422, `DeepSeek duplicated ${catalogExercise.nameEn} on workout day ${dayNumber}`);
+      }
+      dayExerciseIds.add(exerciseId);
 
       const repsMin = rawExercise.repsMin;
       const repsMax = rawExercise.repsMax;
@@ -1403,72 +940,59 @@ function validatePlanData(rawPlanData, safeParams) {
       const loadUnit = rawExercise.loadUnit;
       if (![repsMin, repsMax].every((value) => Number.isInteger(value) && value >= 1 && value <= 180)
         || repsMin > repsMax) {
-        console.warn(`[PLAN_REP_VALIDATION_FAILED] exercise=${nameEn}, rawReps=${JSON.stringify([rawExercise.repsMin, rawExercise.repsMax])}`);
-        throw new HttpError(422, `DeepSeek returned an invalid repetition range for ${nameHe}`);
+        throw new HttpError(422, `DeepSeek returned an invalid repetition range for ${catalogExercise.nameHe}`);
       }
       if (prescriptionUnit !== "repetitions" && prescriptionUnit !== "seconds") {
-        throw new HttpError(422, `DeepSeek returned an invalid prescription unit for ${nameHe}`);
+        throw new HttpError(422, `DeepSeek returned an invalid prescription unit for ${catalogExercise.nameHe}`);
       }
       if (!Number.isInteger(restSeconds) || restSeconds < 30 || restSeconds > 300) {
-        throw new HttpError(422, `DeepSeek returned an invalid rest period for ${nameHe}`);
+        throw new HttpError(422, `DeepSeek returned an invalid rest period for ${catalogExercise.nameHe}`);
       }
       if (!["total_kg", "per_hand_kg", "machine_kg", "bodyweight"].includes(loadUnit)) {
-        throw new HttpError(422, `DeepSeek returned an invalid load unit for ${nameHe}`);
+        throw new HttpError(422, `DeepSeek returned an invalid load unit for ${catalogExercise.nameHe}`);
+      }
+      // Catalog metadata join, same class as name joining: the exercise's legal
+      // load unit comes from its catalog entry — nothing is rewritten.
+      if (!catalogExercise.loadUnits.includes(loadUnit)) {
+        throw new HttpError(422, `DeepSeek chose load unit ${loadUnit} for ${catalogExercise.nameHe}, which supports only ${catalogExercise.loadUnits.join(" or ")}`);
       }
 
-      const weightsKg = Array.isArray(rawExercise.weightsKg)
-        ? [...rawExercise.weightsKg]
-        : [];
-      if (weightsKg.length !== 3 || weightsKg.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 400)) {
-        console.warn(`[PLAN_WEIGHT_VALIDATION_FAILED] exercise=${nameEn}, rawWeights=${JSON.stringify(rawExercise.weightsKg)}`);
-        throw new HttpError(422, `DeepSeek returned invalid weights for ${nameHe}`);
+      const weightsKg = Array.isArray(rawExercise.weightsKg) ? [...rawExercise.weightsKg] : [];
+      if (weightsKg.length !== 3
+        || weightsKg.some((value) => !Number.isInteger(value) || value < 0 || value > 400)) {
+        throw new HttpError(422, `DeepSeek returned invalid working-set weights for ${catalogExercise.nameHe}`);
       }
-      const setLoadJumps = [weightsKg[1] - weightsKg[0], weightsKg[2] - weightsKg[1]];
-      const isStraightLoad = weightsKg[0] === weightsKg[1] && weightsKg[1] === weightsKg[2];
-      const isValidRamp = weightsKg[0] < weightsKg[1]
-        && weightsKg[1] < weightsKg[2]
-        && setLoadJumps.every((jump) => jump <= 10);
       const loadType = loadUnit === "bodyweight" ? "bodyweight" : "external";
-      const setStrategy = isStraightLoad ? "straight" : "ramp";
-      if (loadType === "external" && (weightsKg.some((value) => value <= 0)
-        || (!isStraightLoad && !isValidRamp))) {
-        console.warn(`[PLAN_WEIGHT_VARIATION_FAILED] exercise=${nameEn}, rawWeights=${JSON.stringify(rawExercise.weightsKg)}`);
-        throw new HttpError(422, `DeepSeek returned invalid working-set progression for ${nameHe}`);
-      }
       if (loadType === "bodyweight" && weightsKg.some((value) => value !== 0)) {
-        console.warn(`[PLAN_BODYWEIGHT_VALIDATION_FAILED] exercise=${nameEn}, rawWeights=${JSON.stringify(rawExercise.weightsKg)}`);
-        throw new HttpError(422, `DeepSeek returned external weights for bodyweight exercise ${nameHe}`);
+        throw new HttpError(422, `DeepSeek returned external weights for bodyweight exercise ${catalogExercise.nameHe}`);
+      }
+      if (loadType === "external" && weightsKg.some((value) => value < 0.5)) {
+        throw new HttpError(422, `DeepSeek returned an invalid opening load for external exercise ${catalogExercise.nameHe}`);
+      }
+      const setStrategy = rawExercise.setStrategy;
+      if (setStrategy !== "straight" && setStrategy !== "ramp") {
+        throw new HttpError(422, `DeepSeek returned an invalid set strategy for ${catalogExercise.nameHe}`);
+      }
+      if (loadType === "bodyweight") {
+        if (setStrategy !== "straight") {
+          throw new HttpError(422, `DeepSeek returned an invalid bodyweight set strategy for ${catalogExercise.nameHe}`);
+        }
+      } else {
+        if (setStrategy !== "ramp" || !(weightsKg[0] > weightsKg[1] && weightsKg[1] > weightsKg[2])) {
+          throw new HttpError(422, `DeepSeek returned external weights that do not strictly descend for ${catalogExercise.nameHe}`);
+        }
+        if (weightsKg[0] - weightsKg[1] > 10 || weightsKg[1] - weightsKg[2] > 10) {
+          throw new HttpError(422, `DeepSeek returned a set-to-set weight drop greater than 10 kg for ${catalogExercise.nameHe}`);
+        }
       }
 
-      const technique = validateHebrewInstruction(
-        rawExercise.technique,
-        `technique instructions for ${nameHe}`,
-        20,
-        80,
-        [],
-        { minSentences: 2, minHebrewRatio: 0.8 },
-      );
-      const progression = validateHebrewInstruction(
-        rawExercise.progression,
-        `progression instructions for ${nameHe}`,
-        18,
-        70,
-        [/(כאשר|לאחר|ברגע|אם)/u, /\d/u, /(ק[״"']?ג|חזרות|שניות|משקל|עומס)/u, /(באימון הבא|באימון שלאחר מכן|בשבוע הבא|בפעם הבאה)/u],
-        { minSentences: 2, minHebrewRatio: 0.8 },
-      );
-      if (/לסט(?:ים)?\s+הבא/u.test(progression)) {
-        throw new HttpError(422, `DeepSeek returned unsafe between-set progression for ${nameHe}`);
-      }
-      const targetUnitHe = prescriptionUnit === "seconds" ? "שניות" : "חזרות";
-      const upperTargetPattern = new RegExp(`(?:^|\\D)${repsMax}\\s*${targetUnitHe}`, "u");
-      if (!upperTargetPattern.test(progression)) {
-        throw new HttpError(422, `DeepSeek progression does not use the upper prescription target for ${nameHe}`);
-      }
-      assertExerciseMatchesEquipment({ nameHe, nameEn }, safeParams.equipment);
-      assertExerciseSuitableForGeneralPlan({ nameHe, nameEn });
+      const technique = validatePlanText(rawExercise.technique, `technique instructions for ${catalogExercise.nameHe}`, 20, 600);
+      const progression = validatePlanText(rawExercise.progression, `progression instructions for ${catalogExercise.nameHe}`, 20, 600);
+
       return {
-        nameHe,
-        nameEn,
+        exerciseId,
+        nameHe: catalogExercise.nameHe,
+        nameEn: catalogExercise.nameEn,
         repsMin,
         repsMax,
         prescriptionUnit,
@@ -1490,9 +1014,9 @@ function validatePlanData(rawPlanData, safeParams) {
     throw new HttpError(422, "DeepSeek omitted the required plan tips");
   }
   const tips = {
-    nutrition: validatePlanText(rawTips.nutrition, "nutrition tip", 1, 160),
-    recovery: validatePlanText(rawTips.recovery, "recovery tip", 1, 160),
-    sleep: validatePlanText(rawTips.sleep, "sleep tip", 1, 160),
+    nutrition: validatePlanText(rawTips.nutrition, "nutrition tip", 10, 200),
+    recovery: validatePlanText(rawTips.recovery, "recovery tip", 10, 200),
+    sleep: validatePlanText(rawTips.sleep, "sleep tip", 10, 200),
   };
   return { days, tips };
 }
@@ -1505,46 +1029,12 @@ function validatePlanText(value, label, minLength, maxLength) {
   }
   for (const character of text) {
     const code = character.charCodeAt(0);
-    if (code <= 31 || code === 127) throw new HttpError(422, `DeepSeek returned invalid ${label}`);
+    // Tab and line breaks are legitimate inside multi-sentence instructions.
+    if (code !== 9 && code !== 10 && code !== 13 && (code <= 31 || code === 127)) {
+      throw new HttpError(422, `DeepSeek returned invalid ${label}`);
+    }
   }
   return text;
-}
-
-function validateHebrewInstruction(value, label, minWords, maxWords, requiredPatterns = [], {
-  minSentences = 1,
-  minHebrewRatio = 0.65,
-} = {}) {
-  const text = validatePlanText(value, label, 20, 600);
-  const words = text.match(/[\p{L}\p{N}]+/gu) || [];
-  const letters = text.match(/\p{L}/gu) || [];
-  const hebrewLetters = text.match(/[\u0590-\u05FF]/gu) || [];
-  const sentenceSafeText = text.replace(/(\d)\.(\d)/g, "$1,$2");
-  const sentences = sentenceSafeText.split(/[.!?]+/u).map((part) => part.trim()).filter(Boolean);
-  const hebrewRatio = letters.length > 0 ? hebrewLetters.length / letters.length : 0;
-  if (words.length < minWords || words.length > maxWords
-    || sentences.length < minSentences || sentences.length > 4 || hebrewRatio < minHebrewRatio) {
-    console.warn(`[PLAN_HEBREW_QUALITY_FAILED] label=${label}, words=${words.length}, sentences=${sentences.length}, hebrewRatio=${hebrewRatio.toFixed(2)}`);
-    throw new HttpError(422, `DeepSeek returned low-quality Hebrew ${label}`);
-  }
-  if (requiredPatterns.some((pattern) => !pattern.test(text))) {
-    throw new HttpError(422, `DeepSeek returned incomplete Hebrew ${label}`);
-  }
-  return text;
-}
-
-function assertExerciseMatchesEquipment(exercise, equipment) {
-  if (equipment === "gym") return;
-  const text = `${exercise.nameHe} ${exercise.nameEn}`.toLowerCase();
-  const hasForbiddenTerm = (terms) => terms.some((term) => text.includes(term));
-  if (equipment === "dumbbells" && hasForbiddenTerm(["barbell", "machine", "cable", "smith", "מוט", "מכונה", "כבל", "פולי"])) {
-    throw new HttpError(422, `DeepSeek selected unavailable equipment for ${exercise.nameHe}`);
-  }
-  if (equipment === "bodyweight" && hasForbiddenTerm(["barbell", "dumbbell", "machine", "cable", "smith", "band", "מוט", "משקול", "מכונה", "כבל", "פולי", "גומייה"])) {
-    throw new HttpError(422, `DeepSeek selected unavailable equipment for ${exercise.nameHe}`);
-  }
-  if (equipment === "minimal" && hasForbiddenTerm(["barbell", "dumbbell", "machine", "cable", "smith", "מוט", "משקול", "מכונה", "כבל", "פולי"])) {
-    throw new HttpError(422, `DeepSeek selected unavailable equipment for ${exercise.nameHe}`);
-  }
 }
 
 function renderPlanHtml(planData, safeParams) {
@@ -1574,7 +1064,7 @@ function renderPlanHtml(planData, safeParams) {
       const prescriptionLabel = exercise.prescriptionUnit === "seconds" ? "משך" : "חזרות";
       const prescriptionSuffix = exercise.prescriptionUnit === "seconds" ? "שניות" : "חזרות";
       const strategyLabel = exercise.setStrategy === "ramp"
-        ? "עלייה הדרגתית — העומס עולה באופן מתוכנן בין הסטים"
+        ? "ירידה הדרגתית — העומס יורד באופן מתוכנן בין הסטים"
         : "סטים ישרים — אותו עומס נשמר בכל שלושת הסטים";
       const loadUnitLabel = {
         total_kg: "עומס כולל",
@@ -1975,12 +1465,12 @@ const RECOMMENDATIONS_RESPONSE_FORMAT = Object.freeze({
   type: "json_object",
 });
 
-function buildPlanResponseFormat(dayCount, equipment = "gym") {
+function buildFullPlanResponseFormat(dayCount, equipment = "gym") {
   const allowedExerciseIds = getAllowedExerciseCatalog(equipment).map((exercise) => exercise.exerciseId);
   return {
     type: "json_schema",
     json_schema: {
-      name: "fitmentor_workout_plan",
+      name: "fitmentor_full_workout_plan",
       strict: true,
       schema: {
         type: "object",
@@ -1994,9 +1484,11 @@ function buildPlanResponseFormat(dayCount, equipment = "gym") {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["dayNumber", "exercises"],
+              required: ["dayNumber", "title", "focus", "exercises"],
               properties: {
                 dayNumber: { type: "integer", minimum: 1, maximum: dayCount },
+                title: { type: "string", minLength: 2, maxLength: 100 },
+                focus: { type: "string", minLength: 4, maxLength: 160 },
                 exercises: {
                   type: "array",
                   minItems: 3,
@@ -2004,9 +1496,46 @@ function buildPlanResponseFormat(dayCount, equipment = "gym") {
                   items: {
                     type: "object",
                     additionalProperties: false,
-                    required: ["exerciseId"],
+                    required: [
+                      "exerciseId", "repsMin", "repsMax", "prescriptionUnit",
+                      "restSeconds", "loadUnit", "weightsKg", "setStrategy",
+                      "technique", "progression",
+                    ],
                     properties: {
                       exerciseId: { type: "string", enum: allowedExerciseIds },
+                      repsMin: { type: "integer", minimum: 1, maximum: 180 },
+                      repsMax: { type: "integer", minimum: 1, maximum: 180 },
+                      prescriptionUnit: { type: "string", enum: ["repetitions", "seconds"] },
+                      restSeconds: { type: "integer", minimum: 30, maximum: 300 },
+                      loadUnit: {
+                        type: "string",
+                        enum: ["total_kg", "per_hand_kg", "machine_kg", "bodyweight"],
+                        description: "Must equal the [loadUnit: ...] annotation shown next to the chosen exerciseId in the prompt list. How each weightsKg value is read; bodyweight requires exactly [0,0,0].",
+                      },
+                      weightsKg: {
+                        type: "array",
+                        minItems: 3,
+                        maxItems: 3,
+                        description: "Your own prescribed opening working loads for THIS trainee from their profile only. External loads must be positive whole kilograms, strictly descending from set 1 to set 3, with adjacent sets at most 10 kg apart. Bodyweight requires exactly [0,0,0].",
+                        items: { type: "integer", minimum: 0, maximum: 400 },
+                      },
+                      setStrategy: {
+                        type: "string",
+                        enum: ["straight", "ramp"],
+                        description: "Use ramp for every externally loaded exercise with strictly descending weights. Use straight only for bodyweight exercises with [0,0,0].",
+                      },
+                      technique: {
+                        type: "string",
+                        minLength: 120,
+                        maxLength: 600,
+                        description: "Exactly two grammatical, fluent Hebrew sentences: setup and stabilization first; movement path, breathing and one safety mistake second.",
+                      },
+                      progression: {
+                        type: "string",
+                        minLength: 110,
+                        maxLength: 600,
+                        description: "Exactly two grammatical, fluent Hebrew sentences: load increases only after completing repsMax in all 3 sets with the exact increase amount for the next session, then what to do if the range was missed.",
+                      },
                     },
                   },
                 },
@@ -2029,69 +1558,6 @@ function buildPlanResponseFormat(dayCount, equipment = "gym") {
   };
 }
 
-function buildPlanDayResponseFormat() {
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: "fitmentor_exercise_prescription",
-      strict: true,
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["repsMin", "repsMax", "prescriptionUnit", "restSeconds", "loadUnit", "weightsKg", "technique", "progression"],
-        properties: {
-          repsMin: { type: "integer", minimum: 1, maximum: 180 },
-          repsMax: { type: "integer", minimum: 1, maximum: 180 },
-          prescriptionUnit: { type: "string", enum: ["repetitions", "seconds"] },
-          restSeconds: { type: "integer", minimum: 30, maximum: 300 },
-          loadUnit: {
-            type: "string",
-            enum: ["total_kg", "per_hand_kg", "machine_kg", "bodyweight"],
-            description: "How each weightsKg value is read. bodyweight requires [0,0,0].",
-          },
-          weightsKg: {
-            type: "array",
-            minItems: 3,
-            maxItems: 3,
-            description: "Must equal exactly the mandatory opening loads stated in the user message: identical values for straight sets, the planned ascending ramp, or [0,0,0] for bodyweight.",
-            items: { type: "number", minimum: 0, maximum: 400 },
-          },
-          technique: {
-            type: "string",
-            minLength: 120,
-            maxLength: 600,
-            description: "Exactly two grammatical, fluent Hebrew sentences, 22-45 words total: setup and stabilization first; movement path, breathing and one safety mistake second. No telegraphic fragments.",
-          },
-          progression: {
-            type: "string",
-            minLength: 110,
-            maxLength: 600,
-            description: "Exactly two grammatical, fluent Hebrew sentences, 20-40 words total: load increases only after completing repsMax in all 3 sets with the exact increase amount, then what to do next session if the range was missed.",
-          },
-        },
-      },
-    },
-  };
-}
-
-function buildPlanExerciseLanguageReviewResponseFormat() {
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: "fitmentor_exercise_language_review",
-      strict: true,
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["technique", "progression"],
-        properties: {
-          technique: { type: "string", minLength: 80, maxLength: 600 },
-          progression: { type: "string", minLength: 70, maxLength: 600 },
-        },
-      },
-    },
-  };
-}
 
 async function fetchTextWithHardTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -2157,10 +1623,13 @@ async function tryGenerateContent(promptText, {
       ],
       max_tokens: maxTokens,
       temperature: temperatureOverride ?? (systemPromptOverride ? 0.2 : 0.4),
-      provider: {
-        sort: "throughput",
-        require_parameters: Boolean(responseFormatOverride || reasoningOverride),
-      },
+      // Plan generation carries a strict json_schema contract: route only to
+      // hosts that enforce structured-output grammars (verified empirically —
+      // throughput-sorted routing can land on providers that silently ignore
+      // required fields and enums). Chat/insights keep default fast routing.
+      provider: responseFormatOverride
+        ? { order: ["fireworks", "together", "deepinfra"], allow_fallbacks: false, require_parameters: true }
+        : { sort: "throughput", require_parameters: Boolean(reasoningOverride) },
     };
     if (responseFormatOverride) requestPayload.response_format = responseFormatOverride;
     if (reasoningOverride) requestPayload.reasoning = reasoningOverride;
@@ -2451,21 +1920,12 @@ export const __testOnly = {
   buildChatTrainingWindowFacts,
   sanitizeAndValidatePlan,
   validatePlanRequest,
-  buildPlanGenerationPrompt,
-  buildPlanExercisePrompt,
-  buildPlanExerciseLanguageReviewPrompt,
-  buildPlanResponseFormat,
-  buildPlanDayResponseFormat,
-  buildPlanExerciseLanguageReviewResponseFormat,
-  normalizePlanDayDetails,
-  normalizePlanExerciseDetails,
-  validatePlanOutline,
+  buildFullPlanPrompt,
+  buildFullPlanResponseFormat,
+  getAllowedExerciseCatalog,
+  EXERCISE_CATALOG,
   validatePlanData,
   renderPlanHtml,
   generateValidatedPlan,
   generateValidatedPlanHtml,
-  LOAD_PROFILE,
-  computeSuggestedLoads,
-  assertWeightsMatchSuggestion,
-  mergeReviewedExerciseLanguage,
 };

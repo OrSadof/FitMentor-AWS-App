@@ -38,14 +38,25 @@ export function validateStructuredPlanForDisplay(planData, expectedDays) {
         throw new Error(`זמן המנוחה בתרגיל ${exerciseIndex + 1} אינו תקין`);
       }
       if (!Array.isArray(exercise.weightsKg) || exercise.weightsKg.length !== 3
-        || exercise.weightsKg.some(weight => typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0 || weight > 400)) {
+        || exercise.weightsKg.some(weight => !Number.isInteger(weight) || weight < 0 || weight > 400)) {
         throw new Error(`משקלי התרגיל ${exerciseIndex + 1} אינם תקינים`);
       }
-      if (exercise.setStrategy != null && exercise.setStrategy !== 'straight' && exercise.setStrategy !== 'ramp') {
+      if (exercise.setStrategy !== 'straight' && exercise.setStrategy !== 'ramp') {
         throw new Error(`שיטת הסטים בתרגיל ${exerciseIndex + 1} אינה תקינה`);
       }
       if (exercise.loadUnit != null && !['total_kg', 'per_hand_kg', 'machine_kg', 'bodyweight'].includes(exercise.loadUnit)) {
         throw new Error(`יחידת העומס בתרגיל ${exerciseIndex + 1} אינה תקינה`);
+      }
+      const isBodyweight = exercise.loadUnit === 'bodyweight';
+      if (isBodyweight) {
+        if (exercise.setStrategy !== 'straight' || exercise.weightsKg.some(weight => weight !== 0)) {
+          throw new Error(`נתוני משקל הגוף בתרגיל ${exerciseIndex + 1} אינם תקינים`);
+        }
+      } else if (exercise.setStrategy !== 'ramp'
+        || !(exercise.weightsKg[0] > exercise.weightsKg[1] && exercise.weightsKg[1] > exercise.weightsKg[2])
+        || exercise.weightsKg[0] - exercise.weightsKg[1] > 10
+        || exercise.weightsKg[1] - exercise.weightsKg[2] > 10) {
+        throw new Error(`משקלי התרגיל ${exerciseIndex + 1} חייבים לרדת בין הסטים`);
       }
     });
   });
@@ -65,21 +76,17 @@ export function structuredPlanToDisplayDays(planData) {
     focus: day.focus,
     exercises: (day.exercises || []).map((exercise) => {
       const isDuration = exercise.prescriptionUnit === 'seconds';
-      const inferredStrategy = exercise.weightsKg[0] === exercise.weightsKg[1]
-        && exercise.weightsKg[1] === exercise.weightsKg[2]
-        ? 'straight'
-        : 'ramp';
-      const setStrategy = exercise.setStrategy || inferredStrategy;
       const loadUnit = exercise.loadUnit || (exercise.loadType === 'bodyweight' ? 'bodyweight' : 'total_kg');
+      const setStrategy = exercise.setStrategy;
       const loadUnitLabel = {
         total_kg: 'ק״ג סה״כ',
         per_hand_kg: 'ק״ג לכל יד',
         machine_kg: 'ק״ג בסימון המכונה',
         bodyweight: 'משקל גוף',
       }[loadUnit];
-      const setStrategyLabel = setStrategy === 'ramp'
-        ? 'עלייה הדרגתית — העומס עולה בכוונה בין הסטים'
-        : 'סטים ישרים — אותו עומס נשמר בכוונה בכל שלושת הסטים';
+      const setStrategyLabel = loadUnit === 'bodyweight'
+        ? ''
+        : 'ירידה הדרגתית — העומס יורד בכוונה בין הסטים, מהסט הכבד לקל';
       return {
         title: `${exercise.nameHe} (${exercise.nameEn})`,
         statsBadges: [
@@ -99,8 +106,9 @@ export function structuredPlanToDisplayDays(planData) {
         loadUnit,
         loadUnitLabel,
         extraDetails: [],
-        setWeights: [...exercise.weightsKg],
-        weightText: '',
+        // Bodyweight exercises show a plain label instead of per-set weights.
+        setWeights: loadUnit === 'bodyweight' ? [] : [...exercise.weightsKg],
+        weightText: loadUnit === 'bodyweight' ? 'משקל גוף' : '',
       };
     }),
   }));

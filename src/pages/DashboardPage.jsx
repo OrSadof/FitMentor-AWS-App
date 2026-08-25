@@ -37,12 +37,20 @@ function validatePlanForDisplay(html, expectedDays) {
       if (!labels.has('סטים') || !hasPrescription || !labels.has('מנוחה')) {
         throw new Error(`חסרים נתוני סטים, חזרות או מנוחה בתרגיל ${exercise.title}`);
       }
+      const isBodyweight = /משקל\s*גוף/.test(String(exercise.weightText || ''));
+      if (isBodyweight) return;
       if (!Array.isArray(exercise.setWeights) || exercise.setWeights.length !== 3) {
         throw new Error(`חסרים משקלים מלאים בתרגיל ${exercise.title}`);
       }
       const weights = exercise.setWeights.map(Number);
-      if (weights.some((weight) => !Number.isFinite(weight) || weight < 0)) {
-        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים להיות מספרים לא-שליליים`);
+      if (weights.some((weight) => !Number.isInteger(weight) || weight <= 0)) {
+        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים להיות מספרים שלמים וחיוביים`);
+      }
+      if (!(weights[0] > weights[1] && weights[1] > weights[2])) {
+        throw new Error(`המשקלים בתרגיל ${exercise.title} חייבים לרדת בין הסטים`);
+      }
+      if (weights[0] - weights[1] > 10 || weights[1] - weights[2] > 10) {
+        throw new Error(`הפרש המשקלים בתרגיל ${exercise.title} גדול מדי`);
       }
       if (!exercise.technique || !exercise.progression) {
         throw new Error(`חסרים דגשי טכניקה או התקדמות בתרגיל ${exercise.title}`);
@@ -398,7 +406,7 @@ function PlanExerciseItem({ ex }) {
               <div className="plan-ex-weights-sets">
                 {setWeights.map((w, i) => (
                   <span key={i} className="plan-ex-weight-set">
-                    סט {i + 1} — {ex.loadUnit === 'bodyweight' ? 'משקל גוף' : `${w} ${ex.loadUnitLabel || 'ק״ג'}`}
+                    סט {i + 1} — {w} {ex.loadUnitLabel || 'ק״ג'}
                   </span>
                 ))}
               </div>
@@ -410,12 +418,16 @@ function PlanExerciseItem({ ex }) {
             </div>
           )}
 
-          {/* Recommended weight — text description from AI (e.g. "משקל גוף") */}
+          {/* Bodyweight sets — the internal [0,0,0] representation is never shown. */}
           {!setWeights && hasWeightText && (
             <div className="plan-ex-weights">
-              <span className="plan-ex-weights-label">🏋️ משקל עבודה מומלץ:</span>
+              <span className="plan-ex-weights-label">🏋️ עומס לכל סט:</span>
               <div className="plan-ex-weights-sets">
-                <span className="plan-ex-weight-set">{ex.weightText}</span>
+                {[1, 2, 3].map((setNumber) => (
+                  <span key={setNumber} className="plan-ex-weight-set">
+                    סט {setNumber} — {ex.weightText}
+                  </span>
+                ))}
               </div>
             </div>
           )}
@@ -586,8 +598,10 @@ function PrintablePlan({ name, intro, days }) {
                         const rest = findBadge(ex, 'מנוחה');
                         const weights = (ex.setWeights && ex.setWeights.length > 0) ? ex.setWeights : null;
                         const weightStr = weights
-                          ? (new Set(weights).size === 1 ? `${weights[0]}` : weights.join(' / '))
-                          : '—';
+                          ? weights.join(' / ')
+                          : ex.weightText
+                            ? [1, 2, 3].map((setNumber) => `סט ${setNumber}: ${ex.weightText}`).join(' / ')
+                            : '—';
                         return (
                           <tr key={j}>
                             <td className="pp-col-num">{j + 1}</td>
@@ -1415,7 +1429,7 @@ function EditableExerciseCard({ ex, dIdx, eIdx, onUpdateField, onUpdateWeight })
               <span>סט {sIdx + 1}:</span>
               <input
                 type="number"
-                step="0.5"
+                step="1"
                 className="editable-weight-input"
                 value={w}
                 onChange={(e) => onUpdateWeight(dIdx, eIdx, sIdx, e.target.value)}
@@ -1524,7 +1538,7 @@ export function DashboardPage({ user }) {
         };
       }
     }
-    throw new Error('יצירת התוכנית לא הסתיימה בזמן. לא נשמרו נתוני דמה.');
+    throw new Error('יצירת התוכנית לא הסתיימה בזמן. נסו שוב בעוד רגע.');
   }, [effectiveEmail]);
 
   const loadPlan = useCallback(async () => {
@@ -1676,7 +1690,7 @@ export function DashboardPage({ user }) {
     setEditableDays(prev => {
       const copy = JSON.parse(JSON.stringify(prev));
       const num = Number(val);
-      copy[dIdx].exercises[eIdx].setWeights[setIdx] = val === '' || Number.isNaN(num) ? '' : num;
+      copy[dIdx].exercises[eIdx].setWeights[setIdx] = val === '' || !Number.isInteger(num) ? '' : num;
       return copy;
     });
   };

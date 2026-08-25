@@ -26,20 +26,12 @@ const {
   buildChatTrainingWindowFacts,
   sanitizeAndValidatePlan,
   validatePlanRequest,
-  buildPlanGenerationPrompt,
-  buildPlanExercisePrompt,
-  buildPlanExerciseLanguageReviewPrompt,
-  buildPlanResponseFormat,
-  buildPlanDayResponseFormat,
-  buildPlanExerciseLanguageReviewResponseFormat,
-  normalizePlanDayDetails,
-  normalizePlanExerciseDetails,
+  buildFullPlanPrompt,
+  buildFullPlanResponseFormat,
+  getAllowedExerciseCatalog,
+  EXERCISE_CATALOG,
   validatePlanData,
   renderPlanHtml,
-  LOAD_PROFILE,
-  computeSuggestedLoads,
-  assertWeightsMatchSuggestion,
-  mergeReviewedExerciseLanguage,
 } = __testOnly;
 
 test('AI provider contract is pinned to the required DeepSeek model', () => {
@@ -87,7 +79,7 @@ test('progress records expose understandable structured facts from real workout 
   assert.equal(progressTestOnly.mainLiftKey('פרפר חזה (Chest Fly)'), null);
 });
 
-function validExercise(name, weights = [30, 27.5, 25]) {
+function validExercise(name, weights = [30, 27, 25]) {
   return `
     <p>🏋️ <strong>${name} (${name} English)</strong></p>
     <p><strong>סטים:</strong> 3 סטים | <strong>חזרות:</strong> 8-12 חזרות | <strong>מנוחה:</strong> 60 שניות</p>
@@ -106,35 +98,6 @@ function validPlan(days = 2) {
   return `<div class="ai-plan-result" onclick="bad()"><script>bad()</script>${dayHtml}
     <div class="plan-tips"><p>טיפ תזונה מפורט ומעשי.</p><p>טיפ התאוששות מפורט ומעשי.</p><p>טיפ שינה מפורט ומעשי.</p></div>
   </div>`;
-}
-
-function validStructuredPlan(days = 2) {
-  return {
-    days: Array.from({ length: days }, (_, dayIndex) => ({
-      dayNumber: dayIndex + 1,
-      title: `אימון גוף מלא ${dayIndex + 1}`,
-      focus: 'חיזוק כללי, טכניקה ושיפור הדרגתי של הכושר',
-      exercises: Array.from({ length: 3 }, (__, exerciseIndex) => ({
-        nameHe: `תרגיל ${dayIndex + 1}-${exerciseIndex + 1}`,
-        nameEn: `Exercise ${dayIndex + 1}-${exerciseIndex + 1}`,
-        repsMin: 8,
-        repsMax: 12,
-        prescriptionUnit: 'repetitions',
-        restSeconds: 60,
-        loadType: 'external',
-        setStrategy: 'straight',
-        loadUnit: 'total_kg',
-        weightsKg: [30, 30, 30],
-        technique: 'מקם את הגב במנח ניטרלי, הצמד את השכמות ושמור על כפות הרגליים יציבות לפני תחילת הסט. בצע את התנועה בטווח מלא ובשליטה, נשוף במאמץ והימנע מתנופה או מנעילת המפרקים.',
-        progression: 'כאשר אתה משלים 12 חזרות בכל 3 הסטים ובטכניקה נקייה, הוסף 2.5 ק״ג באימון הבא. אם אינך משלים את הטווח, שמור על אותו משקל וחזור עליו באימון הבא.',
-      })),
-    })),
-    tips: {
-      nutrition: 'העדף ארוחות מאוזנות עם חלבון, ירקות ושתייה מספקת לאורך היום.',
-      recovery: 'השאר זמן התאוששות מספק בין אימונים עצימים של אותה קבוצת שריר.',
-      sleep: 'שאף לשבע עד תשע שעות שינה עקביות בכל לילה כדי לתמוך בהתאוששות.',
-    },
-  };
 }
 
 test('authenticated identity comes only from API Gateway Cognito claims', () => {
@@ -195,7 +158,7 @@ test('plan sanitizer preserves a complete plan and removes executable markup', (
   assert.doesNotMatch(sanitized, /onclick|script|bad\(\)/i);
 });
 
-test('structured DeepSeek plan data is validated and rendered with the exact submitted profile', () => {
+test('single DeepSeek plan call carries the exact profile and honors pure model output', () => {
   const params = validatePlanRequest({
     age: 25,
     gender: 'male',
@@ -206,296 +169,289 @@ test('structured DeepSeek plan data is validated and rendered with the exact sub
     fitnessLevel: 'beginner',
     equipment: 'gym',
   });
-  const prompt = buildPlanGenerationPrompt(params);
+  const prompt = buildFullPlanPrompt(params);
   assert.match(prompt, /גיל=25/);
   assert.match(prompt, /משקל=70 ק״ג/);
   assert.match(prompt, /גובה=175 ס״מ/);
-  assert.match(prompt, /בדיוק 2 ימים/);
   assert.match(prompt, /ימי אימון=2/);
+  assert.match(prompt, /בדיוק 2 ימים/);
   assert.match(prompt, /שני אימוני גוף מלא A\/B/);
-  assert.match(prompt, /שלושה exerciseId בלבד/);
-  assert.match(prompt, /אסור לבחור הליכון.*מכונת מדרגות/);
+  assert.match(prompt, /barbell_bench_press: .* \(Barbell Bench Press\) \[loadUnit: total_kg\]/);
+  assert.match(prompt, /plank: .* \[loadUnit: bodyweight\]/);
+  assert.match(prompt, /חובה להחזיר עבור התרגיל שנבחר בדיוק את ה-loadUnit המסומן/);
+  assert.match(prompt, /בסדר יורד ממש/);
+  assert.match(prompt, /setStrategy=ramp/);
+  assert.match(prompt, /משקלים שלמים וחיוביים/);
+  assert.match(prompt, /אתה קובע לבד את עומסי הפתיחה/);
   assert.match(prompt, /JSON Schema/);
-  assert.match(prompt, /אין HTML, Markdown, נימוקים/);
-  assert.doesNotMatch(prompt, /אימונים אמיתיים אחרונים|BMI/);
+  assert.doesNotMatch(prompt, /עומס הפתיחה המחייב|אסור לשנות אותם/);
   assert.doesNotMatch(prompt, /<h3>|<div class=/);
-  const responseFormat = buildPlanResponseFormat(2);
+
+  const responseFormat = buildFullPlanResponseFormat(2);
   assert.equal(responseFormat.type, 'json_schema');
   assert.equal(responseFormat.json_schema.strict, true);
   assert.equal(responseFormat.json_schema.schema.properties.days.minItems, 2);
-  assert.equal(responseFormat.json_schema.schema.properties.days.items.properties.exercises.minItems, 3);
-  assert.deepEqual(responseFormat.json_schema.schema.properties.days.items.properties.exercises.items.required, ['exerciseId']);
-  assert.equal(responseFormat.json_schema.schema.properties.tips.properties.nutrition.minLength, 40);
-
-  // Outline exercises are catalog identities; the per-exercise call receives
-  // the full catalog entry so the mandatory opening load can be computed.
-  const outline = {
-    days: [{
-      dayNumber: 1,
-      title: 'דחיפה',
-      focus: 'חזה, כתפיים ויד אחורית',
-      exercises: [
-        { exerciseId: 'barbell_bench_press', nameHe: 'לחיצת חזה עם מוט', nameEn: 'Barbell Bench Press', equipment: ['gym'], loadUnits: ['total_kg'] },
-        { exerciseId: 'dumbbell_shoulder_press', nameHe: 'לחיצת כתפיים עם משקולות', nameEn: 'Dumbbell Shoulder Press', equipment: ['gym'], loadUnits: ['per_hand_kg'] },
-        { exerciseId: 'triceps_pushdown', nameHe: 'פשיטת מרפקים בפולי', nameEn: 'Cable Triceps Pushdown', equipment: ['gym'], loadUnits: ['machine_kg'] },
-      ],
-    }],
-    tips: { nutrition: 'טיפ', recovery: 'טיפ', sleep: 'טיפ' },
-  };
-  const dayParams = { ...params, days: 1 };
-  const dayPrompt = buildPlanExercisePrompt(dayParams, outline, outline.days[0], outline.days[0].exercises[0], 0);
-  const suggestedBench = computeSuggestedLoads(outline.days[0].exercises[0], dayParams);
-  assert.deepEqual(suggestedBench.weightsKg, [20, 22.5, 25]);
-  assert.equal(suggestedBench.setStrategy, 'ramp');
-  assert.equal(suggestedBench.incrementKg, 2.5);
-  assert.match(dayPrompt, /עומס הפתיחה המחייב[^.]*סט 1 = 20 ק״ג, סט 2 = 22\.5 ק״ג, סט 3 = 25 ק״ג/);
-  assert.match(dayPrompt, /עלייה הדרגתית מתוכננת בין הסטים/);
-  assert.match(dayPrompt, /שני משפטים מלאים, טבעיים, זורמים ותקניים בעברית, 22-45 מילים/);
-  assert.match(dayPrompt, /20-40 מילים/);
-  assert.match(dayPrompt, /דוגמה לסגנון הנדרש/);
-  assert.match(dayPrompt, /לחיצת חזה עם מוט \(Barbell Bench Press\)/);
-  const straightDayPrompt = buildPlanExercisePrompt(dayParams, outline, outline.days[0], outline.days[0].exercises[1], 1);
-  assert.match(straightDayPrompt, /סטים ישרים/);
-  const dayFormat = buildPlanDayResponseFormat();
-  assert.equal(dayFormat.json_schema.schema.properties.weightsKg.minItems, 3);
-  assert.equal(dayFormat.json_schema.schema.properties.technique.minLength, 120);
-  assert.equal(dayFormat.json_schema.schema.properties.progression.minLength, 110);
-  assert.deepEqual(
-    dayFormat.json_schema.schema.required,
-    ['repsMin', 'repsMax', 'prescriptionUnit', 'restSeconds', 'loadUnit', 'weightsKg', 'technique', 'progression'],
-  );
-  const languageReviewPrompt = buildPlanExerciseLanguageReviewPrompt(dayParams, outline.days[0], validStructuredPlan(1).days[0].exercises[0]);
-  assert.match(languageReviewPrompt, /אל תשנה את התרגיל/);
-  assert.match(languageReviewPrompt, /12 חזרות בכל 3 הסטים/);
-  assert.match(languageReviewPrompt, /העומס הכולל/);
-  assert.match(languageReviewPrompt, /אל תקצר את הטקסט/);
-  assert.deepEqual(buildPlanExerciseLanguageReviewResponseFormat().json_schema.schema.required, ['technique', 'progression']);
-
-  // Mandatory opening loads are profile-aware and rounded to real increments.
-  assert.equal(LOAD_PROFILE.push_up.pctOfBodyweight, 0);
-  assert.ok(LOAD_PROFILE.back_squat.ramp);
-  assert.deepEqual(computeSuggestedLoads(
-    { exerciseId: 'dumbbell_lateral_raise', loadUnits: ['per_hand_kg'] },
-    { age: 30, gender: 'female', weight: 60, fitnessLevel: 'beginner', goal: 'חיטוב וירידה במשקל' },
-  ), { loadUnit: 'per_hand_kg', weightsKg: [2, 2, 2], setStrategy: 'straight', incrementKg: 1 });
-  assert.deepEqual(computeSuggestedLoads(
-    { exerciseId: 'leg_press', loadUnits: ['machine_kg'] },
-    { age: 30, gender: 'male', weight: 80, fitnessLevel: 'intermediate', goal: 'עלייה במסת שריר' },
-  ).weightsKg, [90, 95, 100]);
-  assert.deepEqual(computeSuggestedLoads(
-    { exerciseId: 'back_squat', loadUnits: ['total_kg'] },
-    { age: 30, gender: 'male', weight: 90, fitnessLevel: 'advanced', goal: 'אימוני כוח' },
-  ).weightsKg, [97.5, 100, 102.5]);
-  assert.deepEqual(computeSuggestedLoads(
-    { exerciseId: 'push_up', loadUnits: ['bodyweight'] },
-    { age: 40, gender: 'other', weight: 70, fitnessLevel: 'advanced', goal: 'אימוני כוח' },
-  ), { loadUnit: 'bodyweight', weightsKg: [0, 0, 0], setStrategy: 'straight', incrementKg: 0 });
-
-  // Returned weights must track the mandatory suggestion within one increment.
-  assert.doesNotThrow(() => assertWeightsMatchSuggestion([20, 25, 25], suggestedBench, 'Barbell Bench Press'));
-  assert.throws(
-    () => assertWeightsMatchSuggestion([30, 32.5, 35], suggestedBench, 'Barbell Bench Press'),
-    (error) => error.statusCode === 422 && /required opening load/.test(error.message),
-  );
-  assert.throws(
-    () => assertWeightsMatchSuggestion([5, 5, 5], { ...suggestedBench, weightsKg: [0, 0, 0], incrementKg: 0 }, 'Push-Up'),
-    (error) => error.statusCode === 422 && /required opening load/.test(error.message),
-  );
-
-  // The language review returns only the two Hebrew fields; catalog names and
-  // any field it omits must survive untouched.
-  const mergedFromReview = mergeReviewedExerciseLanguage(
-    validStructuredPlan(1).days[0].exercises[0],
-    { technique: validStructuredPlan(1).days[0].exercises[1].technique },
-  );
-  assert.equal(mergedFromReview.nameHe, validStructuredPlan(1).days[0].exercises[0].nameHe);
-  assert.equal(mergedFromReview.nameEn, validStructuredPlan(1).days[0].exercises[0].nameEn);
-  assert.equal(mergedFromReview.technique, validStructuredPlan(1).days[0].exercises[1].technique);
-  assert.equal(mergedFromReview.progression, validStructuredPlan(1).days[0].exercises[0].progression);
-
-  const providerDay = normalizePlanDayDetails({
-    day: {
-      exercises: [
-        {
-          exercise_index: '1', reps_min: '8', reps_max: '12', prescription_unit: 'חזרות',
-          rest_seconds: '90', load_unit: 'total', weights_kg: ['30', '30', '30'],
-          technique_instructions: validStructuredPlan(1).days[0].exercises[0].technique,
-          progression_instructions: validStructuredPlan(1).days[0].exercises[0].progression,
-        },
-        {
-          repsMin: 10, repsMax: 15, prescriptionUnit: 'reps', restSeconds: 60,
-          loadUnit: 'per hand', weightsKg: [12.5, 12.5, 12.5],
-          technique: validStructuredPlan(1).days[0].exercises[1].technique,
-          progression: validStructuredPlan(1).days[0].exercises[1].progression,
-        },
-        {
-          index: 3, repsMin: 30, repsMax: 45, unit: 'שניות', rest: 45,
-          weight_unit: 'משקל גוף', weights: [0, 0, 0],
-          technique: validStructuredPlan(1).days[0].exercises[2].technique,
-          progression: validStructuredPlan(1).days[0].exercises[2].progression,
-        },
-      ],
-    },
-  }, 1);
-  assert.deepEqual(providerDay.map(({ exerciseIndex, repsMin, repsMax, prescriptionUnit, restSeconds, loadUnit, weightsKg }) => ({
-    exerciseIndex, repsMin, repsMax, prescriptionUnit, restSeconds, loadUnit, weightsKg,
-  })), [
-    { exerciseIndex: 1, repsMin: 8, repsMax: 12, prescriptionUnit: 'repetitions', restSeconds: 90, loadUnit: 'total_kg', weightsKg: [30, 30, 30] },
-    { exerciseIndex: 2, repsMin: 10, repsMax: 15, prescriptionUnit: 'repetitions', restSeconds: 60, loadUnit: 'per_hand_kg', weightsKg: [12.5, 12.5, 12.5] },
-    { exerciseIndex: 3, repsMin: 30, repsMax: 45, prescriptionUnit: 'seconds', restSeconds: 45, loadUnit: 'bodyweight', weightsKg: [0, 0, 0] },
+  assert.equal(responseFormat.json_schema.schema.properties.days.maxItems, 2);
+  const dayItems = responseFormat.json_schema.schema.properties.days.items;
+  assert.deepEqual(dayItems.required, ['dayNumber', 'title', 'focus', 'exercises']);
+  const exerciseItems = dayItems.properties.exercises.items;
+  assert.equal(dayItems.properties.exercises.minItems, 3);
+  assert.equal(dayItems.properties.exercises.maxItems, 3);
+  assert.deepEqual(exerciseItems.required, [
+    'exerciseId', 'repsMin', 'repsMax', 'prescriptionUnit',
+    'restSeconds', 'loadUnit', 'weightsKg', 'setStrategy', 'technique', 'progression',
   ]);
-  assert.equal(normalizePlanExerciseDetails({
-    repsMin: '8', repsMax: '12', prescriptionUnit: 'repetitions', restSeconds: '90',
-    loadUnit: 'machine', weightsKg: ['45', '45', '45'],
-    technique: validStructuredPlan(1).days[0].exercises[0].technique,
-    progression: validStructuredPlan(1).days[0].exercises[0].progression,
-  }, 1, 2).exerciseIndex, 2);
+  assert.ok(exerciseItems.properties.exerciseId.enum.includes('barbell_bench_press'));
+  assert.equal(exerciseItems.properties.weightsKg.minItems, 3);
+  assert.equal(exerciseItems.properties.weightsKg.items.type, 'integer');
+  assert.equal(exerciseItems.properties.weightsKg.items.minimum, 0);
+  assert.equal(exerciseItems.properties.weightsKg.items.maximum, 400);
+  assert.match(exerciseItems.properties.weightsKg.description, /strictly descending/);
+  assert.match(exerciseItems.properties.setStrategy.description, /externally loaded exercise/);
 
-  const structuredPlan = validStructuredPlan(2);
-  structuredPlan.days[0].exercises[0].nameHe = 'פלאנק';
-  structuredPlan.days[0].exercises[0].nameEn = 'Plank';
-  structuredPlan.days[0].exercises[0].repsMin = 45;
-  structuredPlan.days[0].exercises[0].repsMax = 60;
-  structuredPlan.days[0].exercises[0].prescriptionUnit = 'seconds';
-  structuredPlan.days[0].exercises[0].loadType = 'bodyweight';
-  structuredPlan.days[0].exercises[0].setStrategy = 'straight';
-  structuredPlan.days[0].exercises[0].loadUnit = 'bodyweight';
-  structuredPlan.days[0].exercises[0].weightsKg = [0, 0, 0];
-  structuredPlan.days[0].exercises[0].technique = 'מקם את האמות מתחת לכתפיים, כווץ את הבטן ושמור על קו ישר מהראש עד העקבים. נשום בקצב אחיד לאורך ההחזקה והימנע מקריסת האגן או מהרמתו מעל קו הכתפיים.';
-  structuredPlan.days[0].exercises[0].progression = 'כאשר אתה משלים את כל 3 הסטים למשך 60 שניות בטכניקה נקייה, הוסף 5 שניות בכל סט באימון הבא. אם האגן קורס לפני הזמן, שמור על אותו משך עד שתשלים אותו בשליטה.';
-  structuredPlan.days[0].exercises[1].setStrategy = 'ramp';
-  structuredPlan.days[0].exercises[1].loadUnit = 'per_hand_kg';
-  structuredPlan.days[0].exercises[1].weightsKg = [25.005, 27.55, 30.125];
-  structuredPlan.tips.nutrition = 'טיפ';
-  const validated = validatePlanData(JSON.stringify(structuredPlan), params);
-  assert.deepEqual(validated, structuredPlan);
-  const html = renderPlanHtml(validated, params);
-  const validatedHtml = sanitizeAndValidatePlan(html, 2);
-  assert.match(validatedHtml, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
-  assert.match(validatedHtml, /<strong>משך:<\/strong> 45-60 שניות/);
-  assert.match(validatedHtml, /<strong>שיטת סטים:<\/strong> סטים ישרים/);
-  assert.match(validatedHtml, /<strong>דגש טכניקה:<\/strong> מקם את האמות/);
-  assert.match(validatedHtml, /25\.005 ק״ג \| סט 2: 27\.55 ק״ג \| סט 3: 30\.125 ק״ג/);
-  assert.equal((validatedHtml.match(/<h3>/g) || []).length, 2);
-  assert.equal((validatedHtml.match(/🏋️/gu) || []).length, 6);
-  assert.match(validatedHtml, /<strong>משקל מומלץ:<\/strong> משקל גוף \(ללא עומס חיצוני\)<\/p>/);
-  assert.doesNotMatch(validatedHtml, /סט 1: 0 ק״ג/);
-  assert.doesNotMatch(validatedHtml, /undefined|null/);
-
-  const shortTechnique = validStructuredPlan(2);
-  shortTechnique.days[0].exercises[0].technique = 'שמור על גב ישר ויציב. בצע את התנועה לאט בשליטה מלאה.';
-  assert.throws(
-    () => validatePlanData(shortTechnique, params),
-    (error) => error.statusCode === 422 && /low-quality Hebrew/.test(error.message),
-  );
-
-  const shortProgression = validStructuredPlan(2);
-  shortProgression.days[0].exercises[0].progression = 'העלה 2.5 ק״ג לאחר 12 חזרות בכל הסטים. חזור על אותו משקל באימון הבא.';
-  assert.throws(
-    () => validatePlanData(shortProgression, params),
-    (error) => error.statusCode === 422 && /low-quality Hebrew/.test(error.message),
-  );
-
-  const wrongDayCount = validStructuredPlan(2);
-  wrongDayCount.days.pop();
-  assert.throws(
-    () => validatePlanData(wrongDayCount, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const missingWeight = validStructuredPlan(2);
-  missingWeight.days[0].exercises[0].weightsKg = [30, null, 20];
-  assert.throws(
-    () => validatePlanData(missingWeight, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const identicalPositiveWeights = validStructuredPlan(2);
-  identicalPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 30];
-  assert.deepEqual(validatePlanData(identicalPositiveWeights, params).days[0].exercises[0].weightsKg, [30, 30, 30]);
-
-  const partiallyRepeatedPositiveWeights = validStructuredPlan(2);
-  partiallyRepeatedPositiveWeights.days[0].exercises[0].weightsKg = [30, 30, 27.5];
-  assert.throws(
-    () => validatePlanData(partiallyRepeatedPositiveWeights, params),
-    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
-  );
-
-  const externalWeightOnBodyweightExercise = validStructuredPlan(2);
-  externalWeightOnBodyweightExercise.days[0].exercises[0].loadUnit = 'bodyweight';
-  assert.throws(
-    () => validatePlanData(externalWeightOnBodyweightExercise, params),
-    (error) => error.statusCode === 422 && /bodyweight/.test(error.message),
-  );
-
-  const reversedReps = validStructuredPlan(2);
-  reversedReps.days[0].exercises[0].repsMin = 12;
-  reversedReps.days[0].exercises[0].repsMax = 8;
-  assert.throws(
-    () => validatePlanData(reversedReps, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const reorderedWeights = validStructuredPlan(2);
-  reorderedWeights.days[0].exercises[0].setStrategy = 'ramp';
-  reorderedWeights.days[0].exercises[0].weightsKg = [20, 30, 25];
-  assert.throws(
-    () => validatePlanData(reorderedWeights, params),
-    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
-  );
-
-  const excessiveWeightJump = validStructuredPlan(2);
-  excessiveWeightJump.days[0].exercises[0].setStrategy = 'ramp';
-  excessiveWeightJump.days[0].exercises[0].weightsKg = [40, 55, 70];
-  assert.throws(
-    () => validatePlanData(excessiveWeightJump, params),
-    (error) => error.statusCode === 422 && /working-set progression/.test(error.message),
-  );
-
-  const shortBrokenHebrew = validStructuredPlan(2);
-  shortBrokenHebrew.days[0].exercises[0].technique = 'אל תקפוץ, נוע לאט.';
-  assert.throws(
-    () => validatePlanData(shortBrokenHebrew, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const vagueProgression = validStructuredPlan(2);
-  vagueProgression.days[0].exercises[0].progression = 'הוסף מעט משקל כאשר התרגיל קל. נסה שוב באימון הבא.';
-  assert.throws(
-    () => validatePlanData(vagueProgression, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const betweenSetProgression = validStructuredPlan(2);
-  betweenSetProgression.days[0].exercises[0].progression = 'כאשר תשלים 12 חזרות בכל 3 הסטים בטכניקה נקייה, הוסף 2.5 ק״ג לסט הבא. אם הטווח לא הושלם, שמור על אותו משקל באימון הבא.';
-  assert.throws(
-    () => validatePlanData(betweenSetProgression, params),
-    (error) => error.statusCode === 422 && /between-set/.test(error.message),
-  );
-
-  const missingHebrewName = validStructuredPlan(2);
-  missingHebrewName.days[0].exercises[0].nameHe = '';
-  assert.throws(
-    () => validatePlanData(missingHebrewName, params),
-    (error) => error.statusCode === 422,
-  );
-
-  const unsuitableTechnicalLift = validStructuredPlan(2);
-  unsuitableTechnicalLift.days[0].exercises[0].nameHe = 'הנפה אולימפית';
-  unsuitableTechnicalLift.days[0].exercises[0].nameEn = 'Snatch';
-  assert.throws(
-    () => validatePlanData(unsuitableTechnicalLift, params),
-    (error) => error.statusCode === 422 && /technical lift/.test(error.message),
-  );
+  // The menu is pre-filtered to the selected equipment.
+  const bodyweightIds = buildFullPlanResponseFormat(3, 'bodyweight').json_schema.schema
+    .properties.days.items.properties.exercises.items.properties.exerciseId.enum;
+  assert.ok(bodyweightIds.includes('push_up'));
+  assert.ok(!bodyweightIds.includes('barbell_bench_press'));
+  for (const exercise of getAllowedExerciseCatalog('bodyweight')) {
+    assert.ok(exercise.equipment.includes('bodyweight'));
+  }
 });
 
-test('plan validation rejects incomplete output and preserves API-authored set order', () => {
+function providerExercise(exerciseId, overrides = {}) {
+  return {
+    exerciseId,
+    repsMin: 8,
+    repsMax: 12,
+    prescriptionUnit: 'repetitions',
+    restSeconds: 90,
+    loadUnit: 'total_kg',
+    weightsKg: [38, 35, 32],
+    setStrategy: 'ramp',
+    technique: 'שכב על הספסל כשכפות הרגליים יציבות על הרצפה והשכמות מהודקות אחורה ומטה. הורד את המוט בשליטה עד החזה תוך שאיפה, דחוף מעלה תוך נשיפה, והימנע מקשת מוגזמת של הגב התחתון.',
+    progression: 'כאשר אתה משלים 12 חזרות בטכניקה נקייה בכל שלושת הסטים, הוסף 2.5 ק״ג באימון הבא. אם אינך משלים את הטווח, שמור על אותו עומס וחזור עליו באימון הבא.',
+    ...overrides,
+  };
+}
+
+function validProviderPlan(days = 2) {
+  return {
+    days: Array.from({ length: days }, (_, dayIndex) => ({
+      dayNumber: dayIndex + 1,
+      title: `אימון גוף מלא ${dayIndex === 0 ? 'A' : 'B'}`,
+      focus: 'חיזוק כללי, טכניקה ושיפור הדרגתי של הכושר',
+      exercises: [
+        providerExercise('barbell_bench_press'),
+        providerExercise('dumbbell_shoulder_press', { loadUnit: 'per_hand_kg', weightsKg: [12, 10, 8], setStrategy: 'ramp', restSeconds: 75 }),
+        providerExercise('plank', {
+          repsMin: 45, repsMax: 60, prescriptionUnit: 'seconds', restSeconds: 60,
+          loadUnit: 'bodyweight', weightsKg: [0, 0, 0], setStrategy: 'straight',
+        }),
+      ],
+    })),
+    tips: {
+      nutrition: 'העדף ארוחות מאוזנות עם חלבון, ירקות ושתייה מספקת לאורך היום.',
+      recovery: 'השאר זמן התאוששות מספק בין אימונים עצימים של אותה קבוצת שריר.',
+      sleep: 'שאף לשבע עד תשע שעות שינה עקביות בכל לילה כדי לתמוך בהתאוששות.',
+    },
+  };
+}
+
+test('plan data validation joins catalog names and preserves DeepSeek values untouched', () => {
+  const params = validatePlanRequest({
+    age: 25,
+    gender: 'male',
+    weight: 70,
+    height: 175,
+    days: 2,
+    goal: 'חיטוב וירידה במשקל',
+    fitnessLevel: 'beginner',
+    equipment: 'gym',
+  });
+
+  const providerPlan = validProviderPlan(2);
+  const validated = validatePlanData(providerPlan, params);
+
+  // Names are joined from the catalog entry the model selected by ID.
+  assert.equal(validated.days[0].exercises[0].nameHe, EXERCISE_CATALOG.barbell_bench_press.nameHe);
+  assert.equal(validated.days[0].exercises[0].nameEn, EXERCISE_CATALOG.barbell_bench_press.nameEn);
+
+  // Every accepted DeepSeek value passes through verbatim.
+  assert.equal(validated.days[0].title, providerPlan.days[0].title);
+  assert.equal(validated.days[0].focus, providerPlan.days[0].focus);
+  assert.deepEqual(validated.days[0].exercises[0].weightsKg, [38, 35, 32]);
+  assert.equal(validated.days[0].exercises[0].technique, providerPlan.days[0].exercises[0].technique);
+  assert.equal(validated.days[0].exercises[0].progression, providerPlan.days[0].exercises[0].progression);
+  assert.equal(validated.days[0].exercises[0].restSeconds, 90);
+  assert.equal(validated.tips.sleep, providerPlan.tips.sleep);
+
+  // Sets pyramid down — heaviest first; an ascending sequence is rejected
+  // (and retried), never re-sorted.
+  const ascendingSets = validProviderPlan(2);
+  ascendingSets.days[0].exercises[1].weightsKg = [10, 12, 14];
+  assert.throws(() => validatePlanData(ascendingSets, params),
+    (error) => error.statusCode === 422 && /strictly descend/.test(error.message));
+
+  // An emoji inside accepted prose must not be counted as an exercise bullet,
+  // and multi-sentence text may contain line breaks.
+  const decorated = validProviderPlan(2);
+  decorated.days[0].exercises[0].technique = 'שכבי על הספסל כשהשכמות מהודקות והרגליים יציבות 💪 לכל אורך הסט.\nהורידי את המוט בשליטה עד החזה בשאיפה, ודחפי מעלה 🏋️ בנשיפה תוך שמירה על יציבות.';
+  const decoratedValidated = validatePlanData(decorated, params);
+  const decoratedHtml = sanitizeAndValidatePlan(renderPlanHtml(decoratedValidated, params), 2);
+  assert.equal((decoratedHtml.match(/<h3>/g) || []).length, 2);
+  assert.match(decoratedHtml, /💪/);
+  assert.match(decoratedHtml, /🏋️/);
+
+  const html = sanitizeAndValidatePlan(renderPlanHtml(validated, params), 2);
+  assert.match(html, /גיל 25 · 175 ס״מ · 70 ק״ג · מתחיל · חדר כושר מלא/);
+  assert.equal((html.match(/<h3>/g) || []).length, 2);
+  assert.equal((html.match(/🏋️/gu) || []).length, 6);
+  assert.match(html, /<strong>משך:<\/strong> 45-60 שניות/);
+  assert.match(html, /<strong>משקל מומלץ:<\/strong> משקל גוף \(ללא עומס חיצוני\)<\/p>/);
+  assert.doesNotMatch(html, /סט 1: 0 ק״ג/);
+  assert.doesNotMatch(html, /undefined|null/);
+});
+
+test('plan data validation rejects structurally invalid DeepSeek output only', () => {
+  const gymParams = validatePlanRequest({
+    age: 30,
+    gender: 'female',
+    weight: 60,
+    height: 165,
+    days: 2,
+    goal: 'עלייה במסת שריר',
+    fitnessLevel: 'intermediate',
+    equipment: 'gym',
+  });
+  const bodyweightParams = { ...gymParams, equipment: 'bodyweight' };
+
+  const wrongDayCount = validProviderPlan(2);
+  wrongDayCount.days.pop();
+  assert.throws(() => validatePlanData(wrongDayCount, gymParams), (error) => error.statusCode === 422);
+
+  const missingFocus = validProviderPlan(2);
+  delete missingFocus.days[0].focus;
+  assert.throws(() => validatePlanData(missingFocus, gymParams), (error) => error.statusCode === 422);
+
+  const reversedReps = validProviderPlan(2);
+  reversedReps.days[0].exercises[0].repsMin = 15;
+  reversedReps.days[0].exercises[0].repsMax = 8;
+  assert.throws(() => validatePlanData(reversedReps, gymParams), (error) => error.statusCode === 422);
+
+  const shortRest = validProviderPlan(2);
+  shortRest.days[0].exercises[0].restSeconds = 20;
+  assert.throws(() => validatePlanData(shortRest, gymParams), (error) => error.statusCode === 422);
+
+  const unknownExercise = validProviderPlan(2);
+  unknownExercise.days[0].exercises[0].exerciseId = 'magic_machine_3000';
+  assert.throws(() => validatePlanData(unknownExercise, gymParams), (error) => error.statusCode === 422);
+
+  const wrongEquipmentExercise = validProviderPlan(2);
+  assert.throws(
+    () => validatePlanData(wrongEquipmentExercise, bodyweightParams),
+    (error) => error.statusCode === 422 && /unavailable exercise/.test(error.message),
+  );
+
+  // The production failure from 2026-08-23: DeepSeek labeled a weighted
+  // exercise as bodyweight while giving it real loads. The catalog entry's
+  // legal loadUnits must be honored.
+  const mislabeledBodyweight = validProviderPlan(2);
+  mislabeledBodyweight.days[0].exercises[0].loadUnit = 'bodyweight';
+  assert.throws(
+    () => validatePlanData(mislabeledBodyweight, gymParams),
+    (error) => error.statusCode === 422 && /supports only total_kg/.test(error.message),
+  );
+
+  const wrongExternalUnit = validProviderPlan(2);
+  wrongExternalUnit.days[0].exercises[0].loadUnit = 'machine_kg';
+  assert.throws(
+    () => validatePlanData(wrongExternalUnit, gymParams),
+    (error) => error.statusCode === 422 && /supports only total_kg/.test(error.message),
+  );
+
+  const duplicateExercise = validProviderPlan(2);
+  duplicateExercise.days[0].exercises[1] = providerExercise('barbell_bench_press');
+  assert.throws(
+    () => validatePlanData(duplicateExercise, gymParams),
+    (error) => error.statusCode === 422 && /duplicated/.test(error.message),
+  );
+
+  const externalWeightOnBodyweight = validProviderPlan(2);
+  externalWeightOnBodyweight.days[0].exercises[2].weightsKg = [10, 10, 10];
+  assert.throws(
+    () => validatePlanData(externalWeightOnBodyweight, gymParams),
+    (error) => error.statusCode === 422 && /bodyweight exercise/.test(error.message),
+  );
+
+  const zeroExternalLoad = validProviderPlan(2);
+  zeroExternalLoad.days[0].exercises[0].weightsKg = [0, 0, 0];
+  zeroExternalLoad.days[0].exercises[0].setStrategy = 'straight';
+  assert.throws(
+    () => validatePlanData(zeroExternalLoad, gymParams),
+    (error) => error.statusCode === 422 && /invalid opening load/.test(error.message),
+  );
+
+  const fractionalLoad = validProviderPlan(2);
+  fractionalLoad.days[0].exercises[0].weightsKg = [38.5, 35, 32];
+  assert.throws(
+    () => validatePlanData(fractionalLoad, gymParams),
+    (error) => error.statusCode === 422 && /invalid working-set weights/.test(error.message),
+  );
+
+  const truncatedWeights = validProviderPlan(2);
+  truncatedWeights.days[0].exercises[0].weightsKg = [32.5, 35];
+  assert.throws(() => validatePlanData(truncatedWeights, gymParams), (error) => error.statusCode === 422);
+
+  const nonNumericWeight = validProviderPlan(2);
+  nonNumericWeight.days[0].exercises[0].weightsKg = [32.5, null, 37.5];
+  assert.throws(() => validatePlanData(nonNumericWeight, gymParams), (error) => error.statusCode === 422);
+
+  const excessiveWeightDrop = validProviderPlan(2);
+  excessiveWeightDrop.days[0].exercises[0].weightsKg = [100, 80, 60];
+  assert.throws(
+    () => validatePlanData(excessiveWeightDrop, gymParams),
+    (error) => error.statusCode === 422 && /greater than 10 kg/.test(error.message),
+  );
+
+  const varyingStraightSets = validProviderPlan(2);
+  varyingStraightSets.days[0].exercises[0].setStrategy = 'straight';
+  assert.throws(
+    () => validatePlanData(varyingStraightSets, gymParams),
+    (error) => error.statusCode === 422 && /do not strictly descend/.test(error.message),
+  );
+
+  const flatRampSets = validProviderPlan(2);
+  flatRampSets.days[0].exercises[1].weightsKg = [10, 10, 10];
+  assert.throws(
+    () => validatePlanData(flatRampSets, gymParams),
+    (error) => error.statusCode === 422 && /do not strictly descend/.test(error.message),
+  );
+
+  const htmlInjection = validProviderPlan(2);
+  htmlInjection.days[0].exercises[0].technique = '<b>שמור על גב ישר</b> ובצע את התנועה בשליטה מלאה לאורך כל החזרה.';
+  assert.throws(() => validatePlanData(htmlInjection, gymParams), (error) => error.statusCode === 422);
+
+  const missingTip = validProviderPlan(2);
+  delete missingTip.tips.sleep;
+  assert.throws(() => validatePlanData(missingTip, gymParams), (error) => error.statusCode === 422);
+});
+
+test('plan validation rejects incomplete, ascending, and fractional weight prescriptions', () => {
   const incomplete = validPlan(2).replace(validExercise('תרגיל 1-ג', [18, 16, 14]), '');
   assert.throws(() => sanitizeAndValidatePlan(incomplete, 2), (error) => error.statusCode === 422);
 
-  const ascending = validPlan(1).replace('סט 1: 30 ק"ג | סט 2: 27.5 ק"ג | סט 3: 25 ק"ג', 'סט 1: 20 ק"ג | סט 2: 25 ק"ג | סט 3: 30 ק"ג');
-  const preserved = sanitizeAndValidatePlan(ascending, 1);
-  assert.match(preserved, /סט 1: 20 ק"ג \| סט 2: 25 ק"ג \| סט 3: 30 ק"ג/);
+  const ascending = validPlan(1).replace('סט 1: 30 ק"ג | סט 2: 27 ק"ג | סט 3: 25 ק"ג', 'סט 1: 20 ק"ג | סט 2: 25 ק"ג | סט 3: 30 ק"ג');
+  assert.throws(
+    () => sanitizeAndValidatePlan(ascending, 1),
+    (error) => error.statusCode === 422 && /strictly descend/.test(error.message),
+  );
+
+  const fractional = validPlan(1).replace('סט 2: 27 ק"ג', 'סט 2: 27.5 ק"ג');
+  assert.throws(
+    () => sanitizeAndValidatePlan(fractional, 1),
+    (error) => error.statusCode === 422 && /non-integer/.test(error.message),
+  );
 });
 
 test('plan request contract rejects missing or out-of-range profile data', () => {
