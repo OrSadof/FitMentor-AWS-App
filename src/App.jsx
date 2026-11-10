@@ -103,7 +103,11 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
   const [loginErrors, setLoginErrors] = useState({ email: '', password: '' });
   const [regErrors, setRegErrors] = useState({ name: '', email: '', password: '' });
   const [forgotErrors, setForgotErrors] = useState({ email: '' });
-  const [resetErrors, setResetErrors] = useState({ newPassword: '', confirmPassword: '' });
+  const [resetErrors, setResetErrors] = useState({ email: '', code: '', newPassword: '', confirmPassword: '' });
+
+  const [resetEmailInput, setResetEmailInput] = useState('');
+  const [resetCodeInput, setResetCodeInput] = useState('');
+  const [resetSubmitting, setResetSubmitting] = useState(false);
 
   const resetUsernameRef = useRef('');
   const resetCodeRef = useRef('');
@@ -113,7 +117,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     setLoginErrors({ email: '', password: '' });
     setRegErrors({ name: '', email: '', password: '' });
     setForgotErrors({ email: '' });
-    setResetErrors({ newPassword: '', confirmPassword: '' });
+    setResetErrors({ email: '', code: '', newPassword: '', confirmPassword: '' });
   };
 
   const switchView = (newView) => {
@@ -132,10 +136,15 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
       setForgotEmail('');
       setResetNewPassword('');
       setResetConfirmPassword('');
+      setResetSubmitting(false);
       clearErrors();
-      if (initialView === 'resetPassword' && resetCodeFromUrl) {
-        resetCodeRef.current = resetCodeFromUrl;
-        resetUsernameRef.current = resetEmailFromUrl;
+      if (initialView === 'resetPassword') {
+        const code = resetCodeFromUrl || '';
+        const email = resetEmailFromUrl || '';
+        resetCodeRef.current = code;
+        resetUsernameRef.current = email;
+        setResetCodeInput(code);
+        setResetEmailInput(email);
       }
     }
   }, [isOpen, initialView, resetCodeFromUrl, resetEmailFromUrl]);
@@ -313,8 +322,26 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
   };
 
   const handleResetPassword = async () => {
-    const errors = { newPassword: '', confirmPassword: '' };
+    if (resetSubmitting) return;
+
+    const targetUser = fmNormalizeEmail(resetEmailInput || resetEmailFromUrl || resetUsernameRef.current);
+    const targetCode = String(resetCodeInput || resetCodeFromUrl || resetCodeRef.current || '').trim();
+
+    const errors = { email: '', code: '', newPassword: '', confirmPassword: '' };
     let hasError = false;
+
+    if (!targetUser) {
+      errors.email = 'נא להזין כתובת אימייל לאיפוס';
+      hasError = true;
+    } else if (!EMAIL_REGEX.test(targetUser)) {
+      errors.email = EMAIL_VALIDATION_MESSAGE;
+      hasError = true;
+    }
+
+    if (!targetCode) {
+      errors.code = 'חסר קוד אימות. יש לפתוח מחדש את הקישור במייל או להזין את הקוד';
+      hasError = true;
+    }
 
     if (!resetNewPassword) {
       errors.newPassword = 'נא להזין סיסמה חדשה';
@@ -335,16 +362,20 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     setResetErrors(errors);
     if (hasError) return;
 
+    setResetSubmitting(true);
     try {
       await fitmentorApi.confirmForgotPassword(
-        resetUsernameRef.current,
-        resetCodeRef.current,
+        targetUser,
+        targetCode,
         resetNewPassword
       );
-      showToast('הסיסמה עודכנה בהצלחה! ✅');
+      showToast('הסיסמה עודכנה בהצלחה! כעת ניתן להתחבר 🚀');
+      setLoginEmail(targetUser);
       switchView('login');
     } catch (err) {
       showToast(err.message || 'שגיאה בעדכון הסיסמה', 'error');
+    } finally {
+      setResetSubmitting(false);
     }
   };
 
@@ -466,7 +497,47 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
         {view === 'resetPassword' && (
           <div>
             <h2 className="modal-title-register">איפוס סיסמה</h2>
-            <p className="modal-subtitle">בחר סיסמה חדשה</p>
+            <p className="modal-subtitle">
+              {(resetEmailInput || resetEmailFromUrl || resetUsernameRef.current)
+                ? `בחר סיסמה חדשה עבור ${resetEmailInput || resetEmailFromUrl || resetUsernameRef.current}`
+                : 'בחר סיסמה חדשה לחשבונך'}
+            </p>
+
+            {(!resetEmailFromUrl && !resetUsernameRef.current) && (
+              <div style={{ marginBottom: '14px' }}>
+                <label htmlFor="resetEmailInput" className="text-right-label">כתובת אימייל</label>
+                <input
+                  type="email"
+                  id="resetEmailInput"
+                  className={`modal-input ${resetErrors.email ? 'is-invalid' : ''}`}
+                  placeholder="name@example.com"
+                  value={resetEmailInput}
+                  onChange={(e) => {
+                    setResetEmailInput(e.target.value);
+                    if (resetErrors.email) setResetErrors(prev => ({ ...prev, email: '' }));
+                  }}
+                />
+                {resetErrors.email && <span className="field-error-msg">{resetErrors.email}</span>}
+              </div>
+            )}
+
+            {(!resetCodeFromUrl && !resetCodeRef.current) && (
+              <div style={{ marginBottom: '14px' }}>
+                <label htmlFor="resetCodeInput" className="text-right-label">קוד אימות</label>
+                <input
+                  type="text"
+                  id="resetCodeInput"
+                  className={`modal-input ${resetErrors.code ? 'is-invalid' : ''}`}
+                  placeholder="קוד בן 6 ספרות שהתקבל במייל"
+                  value={resetCodeInput}
+                  onChange={(e) => {
+                    setResetCodeInput(e.target.value);
+                    if (resetErrors.code) setResetErrors(prev => ({ ...prev, code: '' }));
+                  }}
+                />
+                {resetErrors.code && <span className="field-error-msg">{resetErrors.code}</span>}
+              </div>
+            )}
 
             <label htmlFor="resetNewPassword" className="text-right-label">סיסמה חדשה</label>
             <input
@@ -496,7 +567,13 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
             />
             {resetErrors.confirmPassword && <span className="field-error-msg">{resetErrors.confirmPassword}</span>}
 
-            <button className="btn-register-action" onClick={handleResetPassword}>עדכן סיסמה</button>
+            <button
+              className="btn-register-action"
+              onClick={handleResetPassword}
+              disabled={resetSubmitting}
+            >
+              {resetSubmitting ? 'מעדכן סיסמה...' : 'עדכן סיסמה'}
+            </button>
 
             <div className="modal-footer">
               <a className="text-muted link-block" style={{ fontSize: '0.9rem' }} onClick={() => switchView('login')}>חזרה להתחברות</a>
@@ -784,27 +861,71 @@ function App() {
   const [resetCodeFromUrl, setResetCodeFromUrl] = useState('');
   const [resetEmailFromUrl, setResetEmailFromUrl] = useState('');
 
+  const handleOpenAuth = (view = 'login') => {
+    setAuthInitialView(view);
+    setIsModalOpen(true);
+  };
+
+  const handleCloseAuth = () => {
+    setIsModalOpen(false);
+    setAuthInitialView('login');
+    setResetCodeFromUrl('');
+    setResetEmailFromUrl('');
+  };
+
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const resetCode = urlParams.get('reset_code') || urlParams.get('code');
-    const resetEmail = urlParams.get('email');
-    const action = urlParams.get('action');
-    const isConfirmation = urlParams.get('confirmed') === 'true' || window.location.search.includes('confirmUser');
-    const isResetLink = action === 'resetPassword' && resetCode;
+    const getParam = (name) => {
+      const searchParams = new URLSearchParams(window.location.search);
+      const val = searchParams.get(name);
+      if (val !== null && val !== '') return val;
+
+      if (window.location.hash) {
+        const hash = window.location.hash;
+        const qIndex = hash.indexOf('?');
+        if (qIndex !== -1) {
+          const hashParams = new URLSearchParams(hash.substring(qIndex));
+          const hVal = hashParams.get(name);
+          if (hVal !== null && hVal !== '') return hVal;
+        }
+        if (hash.includes('=')) {
+          const hashParams = new URLSearchParams(hash.replace(/^#\/?/, ''));
+          const hVal = hashParams.get(name);
+          if (hVal !== null && hVal !== '') return hVal;
+        }
+      }
+      return null;
+    };
+
+    const resetCode = getParam('reset_code') || getParam('code') || getParam('confirmation_code');
+    const rawEmail = getParam('email') || getParam('username') || getParam('user_name') || getParam('user') || '';
+    const resetEmail = fmNormalizeEmail(rawEmail);
+    const action = getParam('action');
+    const hasResetFlag = getParam('reset') === '1' || getParam('reset') === 'true' || action === 'resetPassword' || action === 'reset';
+    const isConfirmation = getParam('confirmed') === 'true' || window.location.search.includes('confirmUser') || window.location.hash.includes('confirmUser');
+
+    const isResetLink = Boolean(resetCode && (hasResetFlag || resetEmail || action === 'resetPassword'));
 
     if (isConfirmation) {
       setShowConfirmedModal(true);
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (isResetLink) {
+      clearStoredAuth();
+      setIsLoggedIn(false);
+      setDisplayName('');
+      setCurrentUserEmail('');
+      setActiveTab('landing');
       setResetCodeFromUrl(resetCode);
-      setResetEmailFromUrl(resetEmail || '');
+      setResetEmailFromUrl(resetEmail);
       setAuthInitialView('resetPassword');
       setIsModalOpen(true);
       window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    } else if (getParam('login') === '1' && !localStorage.getItem('fitmentor_idToken')) {
+      setAuthInitialView('login');
+      setIsModalOpen(true);
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
-  }, []);
 
-  useEffect(() => {
     const idToken = localStorage.getItem('fitmentor_idToken');
     const identity = getTokenIdentity(idToken);
     if (identity) {
@@ -901,7 +1022,7 @@ function App() {
       {/* Auth Modal */}
       <AuthModal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={handleCloseAuth}
         onLoginSuccess={handleLoginSuccess}
         showToast={showToast}
         initialView={authInitialView}
@@ -913,7 +1034,7 @@ function App() {
       <ConfirmationSuccessModal
         isOpen={showConfirmedModal}
         onClose={() => setShowConfirmedModal(false)}
-        onOpenLogin={() => setIsModalOpen(true)}
+        onOpenLogin={() => handleOpenAuth('login')}
       />
 
       {/* Animated Logout Modal */}
@@ -1005,7 +1126,7 @@ function App() {
               <>
                 <a href="#about">הבעיה והצורך</a>
                 <a href="#features">פיצ'רים</a>
-                <button type="button" className="btn-nav-primary" onClick={() => setIsModalOpen(true)}>
+                <button type="button" className="btn-nav-primary" onClick={() => handleOpenAuth('login')}>
                   הרשמה / התחברות
                 </button>
               </>
@@ -1086,7 +1207,7 @@ function App() {
                 FitMentor מייצר תוכניות אימון מותאמות אישית, עוקב אחר ההתקדמות שלך ועונה על כל שאלה – בדיוק כמו מאמן אנושי, רק חכם יותר וזמין תמיד.
               </p>
               {!isLoggedIn && (
-                <button type="button" className="btn-cta" onClick={() => setIsModalOpen(true)}>
+                <button type="button" className="btn-cta" onClick={() => handleOpenAuth('login')}>
                   התחל להתאמן עכשיו 🚀
                 </button>
               )}
