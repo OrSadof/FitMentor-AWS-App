@@ -333,7 +333,7 @@ function AuthModal({ isOpen, onClose, onLoginSuccess, showToast, initialView = '
     if (!targetUser) {
       errors.email = 'נא להזין כתובת אימייל לאיפוס';
       hasError = true;
-    } else if (!EMAIL_REGEX.test(targetUser)) {
+    } else if (targetUser.includes('@') ? !EMAIL_REGEX.test(targetUser) : targetUser.length < 3) {
       errors.email = EMAIL_VALIDATION_MESSAGE;
       hasError = true;
     }
